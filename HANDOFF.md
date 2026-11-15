@@ -295,3 +295,25 @@ that data in a browser harness whose bridge never sends. The installed app was
 not replaced. Windows shares the UI files; its host does not advertise
 Shepherdr support, so the switch stays hidden there.
 
+
+
+## macOS hc compatibility — November 15, 2026
+
+The macOS host now prefers hc and retains the legacy Herdr backend when hc is
+absent. HC.swift maps existing live Claude/Codex terminals and their app labels
+to roster cards. The default core owns remote machine routing; no SSH targets or
+--via command strings are executed by the HUD. Terminal argv stays out of cards
+and diagnostics. Provider detection checks executable identity, not task text.
+
+The transport writes JSON-RPC only through stdin, bounds output, and completes
+once all matching replies arrive instead of waiting for the long-lived connect
+bridge to close. Sends are separate from discovery/identity requests, require
+fresh identity and idle status, and use if=idle, force=false. Prompt delivery
+has a 75-second bound; uncertain delivery retains the UI draft and requires its
+existing explicit reconciliation action. No retry is automatic. hc done status
+is conservatively read only until idle. Core/address/creation/process/provider
+and saved routing changes invalidate the selected card. Windows remains legacy.
+
+Tests must use controlled transports or an explicitly isolated hc core, never
+the user's Claude/Codex terminals. Local packaging/install and live read-only UI
+acceptance are separate from source verification.

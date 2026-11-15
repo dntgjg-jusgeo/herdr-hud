@@ -41,9 +41,9 @@ function renderHeader(){
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
   const state=a?.agent_status||'';const busy=state==='working';$('working').hidden=!busy;
   if(busy&&!since.has(a.id))since.set(a.id,Date.now());
-  $('send').disabled=!a?.online||!['idle','done'].includes(state)||sending||uncertain.has(selected)||!$('prompt').value.trim();
+  $('send').disabled=!a?.online||a.can_prompt===false||!['idle','done'].includes(state)||sending||uncertain.has(selected)||!$('prompt').value.trim();
   $('prompt').disabled=!a;$('chat').disabled=a?.agent!=='codex';
-  $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?'Agent is working. You can draft the next prompt here.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
+  $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?'Agent is working. You can draft the next prompt here.':a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
   $('reconcile').hidden=!uncertain.has(selected);
 }
 function inline(text,parent){ // No terminal text is ever interpreted as HTML.
@@ -117,14 +117,16 @@ window.verifyControls=async()=>{
   const saved={selected,filter,mode,draft:$('prompt').value,drafts:new Map(drafts)},results={};
   const wait=async predicate=>{const end=Date.now()+22000;while(!predicate()){if(Date.now()>end)throw Error('Timed out waiting for agent output');await new Promise(r=>setTimeout(r,100));}};
   try{
-    const local=agents.find(a=>a.machine_id==='local'&&a.online),remote=agents.find(a=>a.machine_id!=='local'&&a.online);
-    if(!local||!remote)throw Error('This check requires one local and one remote agent');
-    select(local.id);await wait(()=>outputs.has(local.id)&&!reading);results.localOutput=outputs.get(local.id).text.length>0;
+    const online=agents.filter(a=>a.online),first=online.find(a=>a.machine_id==='local'&&a.agent==='codex')||online.find(a=>a.machine_id==='local')||online[0];
+    const second=online.find(a=>a.machine_id!==first?.machine_id)||online.find(a=>a.id!==first?.id);
+    if(!first||!second)throw Error('This check requires two online agents');
+    select(first.id);await wait(()=>outputs.has(first.id)&&!reading);results.firstOutput=outputs.get(first.id).text.length>0;
     $('prompt').value='HUD verification draft — never submitted';$('prompt').dispatchEvent(new Event('input'));
-    select(remote.id);await wait(()=>outputs.has(remote.id)&&!reading);results.remoteOutput=outputs.get(remote.id).text.length>0;
-    select(local.id);results.draftPreserved=$('prompt').value==='HUD verification draft — never submitted';
+    select(second.id);await wait(()=>outputs.has(second.id)&&!reading);results.secondOutput=outputs.get(second.id).text.length>0;
+    select(first.id);results.draftPreserved=$('prompt').value==='HUD verification draft — never submitted';
     $('terminal').click();results.terminalView=$('output').querySelector('pre')!==null;
-    $('chat').click();results.chatView=$('chat').getAttribute('aria-pressed')==='true';
+    if(first.agent==='codex'){$('chat').click();results.chatView=$('chat').getAttribute('aria-pressed')==='true';}
+    else results.chatDisabled=$('chat').disabled;
     $('search').value='a-nonexistent-agent-filter';$('search').dispatchEvent(new Event('input'));results.searchFilters=$('roster').querySelectorAll('.agent').length===0;
     const test=el('div');inline('<img src=x onerror=alert(1)>',test);results.transcriptIsText=test.querySelector('img')===null&&test.textContent.includes('<img');
     results.layoutFits=document.body.scrollWidth<=innerWidth&&document.body.scrollHeight<=innerHeight;

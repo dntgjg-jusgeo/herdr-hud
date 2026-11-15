@@ -22,6 +22,7 @@ struct Invocation {
     let mutation: Bool
     var input: Data? = nil
     var localPrompt: Bool = false
+    var responseIDs: Set<String> = []
 }
 final class HerdrClient {
     let execute: (Invocation) throws -> String
@@ -30,8 +31,10 @@ final class HerdrClient {
     var bindings: [String: (Machine, Row)] = [:]
     var machines: [Machine] = []
     var discoveryError = ""
+    lazy var hc = HCClient(binary: binary, execute: execute)
+    var usesHC: Bool { URL(fileURLWithPath: binary).lastPathComponent == "hc" }
     init(binary: String? = nil, execute: ((Invocation) throws -> String)? = nil) {
-        let candidates = [NSHomeDirectory() + "/.local/bin/herdr", "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
+        let candidates = [NSHomeDirectory() + "/.local/bin/hc", "/opt/homebrew/bin/hc", "/usr/local/bin/hc", NSHomeDirectory() + "/.local/bin/herdr", "/opt/homebrew/bin/herdr", "/usr/local/bin/herdr"]
         self.binary = binary ?? candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) ?? "/usr/bin/env"
         let runner = ProcessRunner()
         self.execute = execute ?? { try runner.run($0) }
@@ -75,6 +78,7 @@ final class HerdrClient {
         encode([machine.id, machine.target ?? "", machine.session, row["pane_id"] ?? "", row["terminal_id"] ?? "", row["agent_session"] ?? NSNull()])
     }
     func snapshot() -> Row {
+        if usesHC { return hc.snapshot() }
         do { machines = try discover(); discoveryError = "" }
         catch { discoveryError = error.localizedDescription; if machines.isEmpty { machines = [Machine(id:"local", label:"This Mac", target:nil, session:"default")] } }
         var all: [Row] = [], states: [Row] = [], nextBindings: [String: (Machine, Row)] = [:]
@@ -112,10 +116,12 @@ final class HerdrClient {
         return (machine, current)
     }
     func output(_ id: String) throws -> Row {
+        if usesHC { return try hc.output(id) }
         let (machine, row) = try resolve(id)
         return ["id":id, "provider":row["agent"] ?? "", "text":try call(machine, ["agent", "read", row["pane_id"] as! String, "--source", "recent-unwrapped", "--lines", "180"])]
     }
     func prompt(_ id: String, _ message: String) throws -> Row {
+        if usesHC { return try hc.prompt(id, message) }
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, message.utf8.count <= 60000, !message.contains("\0"), !message.hasPrefix("-") else { throw HUDError("Enter a prompt under 60 KB that does not start with a dash.") }
         let (machine, row) = try resolve(id)
         guard ["idle", "done"].contains(row["agent_status"] as? String ?? "") else { throw HUDError("This agent is busy or needs input. Answer native questions in Herdr.") }

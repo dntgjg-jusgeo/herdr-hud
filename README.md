@@ -62,7 +62,7 @@ Settings locations are documented below.
 
 ## Run on macOS
 
-Requires macOS 13+, Herdr 0.9+ installed with an existing running default session,
+Requires macOS 13+, hc 0.1.21 (or legacy Herdr 0.9+) installed with an existing running default session,
 and existing SSH authentication for any saved remote machines. No account,
 model API key, Python runtime, Node runtime, or hosted service is required to
 run the packaged app. Xcode command-line tools are needed to build from source.
@@ -122,7 +122,26 @@ test, not an exclusive-fullscreen game test. Do not run it during active gamepla
 For commands and examples, see [connecting the HUD](docs/getting-started.md#install-and-connect-the-hud)
 and [adding more computers](docs/getting-started.md#add-more-computers).
 
-The app reads `herdr machine list --json` from your existing installation. It
+On macOS the HUD prefers `hc` in its standard user or Homebrew install. It uses
+`hc connect` with JSON-RPC over stdin/stdout to read existing Claude and Codex
+terminals in the default core session. `herdr.space`, `herdr.tab` and `where`
+labels supply their workspace/tab context. Other foreground programs are omitted.
+The core routes saved machines itself, including named sessions and `--via`
+profiles; disconnected machines retain cached cards marked offline. This hc path
+is currently macOS only. Windows continues to use legacy Herdr.
+
+The hc path binds each card to its core, permanent terminal address, creation
+time, foreground process and reported provider. It checks those facts and machine
+routing again before reading or sending. Only a matching provider's explicit
+`idle` status enables sending; unknown, busy, blocked and `done` statuses remain
+read only. Sends use the core's atomic `if: idle` condition without `force`.
+The transport waits up to 75 seconds for delivery, then treats a missing or invalid
+acknowledgement as uncertain and retains the draft. Inspect the terminal before
+using the composer's explicit reconciliation control. Nothing is automatically retried.
+The core cannot atomically bind a send to the expected foreground process, so a
+process replacement between the final check and submission remains a narrow race.
+
+When hc is absent, the app reads `herdr machine list --json` from your existing installation. It
 lists the local default session and enabled saved SSH machines, respecting each
 remote profile's named session. It does not enroll machines, create teams,
 restart Herdr, or install/update anything on remote computers. Machine discovery
@@ -185,7 +204,7 @@ hosts and remote helper recheck the expected agent and validate acknowledgements
 Unknown delivery is never retried automatically.
 
 Native command output is streamed with a 1 MiB stdout and 64 KiB stderr limit,
-with 12-second Mac / 15-second Windows deadlines. Mac commands start in their own
+with 12-second Mac / 15-second Windows deadlines (75 seconds for macOS hc prompt delivery). Mac commands start in their own
 process group; Windows commands are created suspended, assigned to a kill-on-close
 Job Object, then resumed. Timeout or overflow terminates the owned group/job,
 including descendants. The remote helper caps socket replies at 1 MiB and status
@@ -196,6 +215,7 @@ output at 64 KiB, and has a 12-second deadline. Prompts are limited to 60 KB.
 - `Sources/HerdrHUD/App.swift`: AppKit nonactivating panels, fullscreen Spaces,
   menu-bar controls, Carbon shortcuts, monitor positioning, and WebKit bridge.
 - `Sources/HerdrHUD/Transport.swift`: bounded process groups and native socket prompts.
+- `Sources/HerdrHUD/HC.swift`: macOS hc JSON-RPC discovery, checked reads and prompts.
 - `Sources/HerdrHUD/Herdr.swift`: saved machine
   discovery, cached roster, fresh identity/readiness checks, literal SSH quoting.
 - `Sources/HerdrHUD/Resources/`: reusable UI and transcript/attention logic.
@@ -262,7 +282,11 @@ live Shepherdr server. Node is needed only for JavaScript development tests; Pyt
 fixtures and remote-helper tests during development. Swift tests exercise
 identity changes, readiness, argument quoting, ambiguous delivery, large output,
 saved-machine removal, offline caching, and reconnects with controlled transports.
-They do not prompt active user agents.
+They do not prompt active user agents. An optional real-hc integration test runs
+only when `HUD_HC_INTEGRATION_BINARY` points to an installed hc. It creates a
+separate scratch core/session and a dummy program, checks that its core identity
+differs from the user's core before creating any terminal, and tests delivery only
+to that dummy. It requires permission to create a local Unix socket.
 
 With the app running:
 

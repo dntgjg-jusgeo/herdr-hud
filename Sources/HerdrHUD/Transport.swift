@@ -23,7 +23,7 @@ final class ProcessRunner {
         posix_spawn_file_actions_adddup2(&actions,output.fileHandleForWriting.fileDescriptor,1)
         posix_spawn_file_actions_adddup2(&actions,error.fileHandleForWriting.fileDescriptor,2)
         posix_spawnattr_setflags(&attr,Int16(POSIX_SPAWN_SETPGROUP));posix_spawnattr_setpgroup(&attr,0)
-        var env=ProcessInfo.processInfo.environment.filter{!$0.key.hasPrefix("HERDR_")}
+        var env=ProcessInfo.processInfo.environment.filter{!$0.key.hasPrefix("HERDR_") && !$0.key.hasPrefix("HC_")}
         env["PATH"]=NSHomeDirectory()+"/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         let av=([invocation.executable]+invocation.arguments).map{strdup($0)}+[nil]
         let ev=env.map{strdup("\($0.key)=\($0.value)")}+[nil]
@@ -42,7 +42,7 @@ final class ProcessRunner {
         for fd in [inFD,outFD,errFD] {_=fcntl(fd,F_SETFL,O_NONBLOCK)}
         var pending=invocation.input ?? Data(), out=Data(), err=Data()
         var inputOpen=true,outOpen=true,errOpen=true
-        let deadline=Date().addingTimeInterval(timeout)
+        let deadline=Date().addingTimeInterval(invocation.mutation && !invocation.responseIDs.isEmpty ? max(timeout,75) : timeout)
         while !reaped || outOpen || errOpen {
             if Date()>=deadline {throw HUDError(invocation.mutation ? "Delivery uncertain. Inspect Herdr before sending again." : "Machine timed out.")}
             if inputOpen && pending.isEmpty {try? input.fileHandleForWriting.close();inputOpen=false}
@@ -60,7 +60,21 @@ final class ProcessRunner {
                 if count==0 {if i==0 {outOpen=false}else{errOpen=false}}
                 else if count>0 {
                     guard used+count<=limit else {throw HUDError(invocation.mutation ? "Delivery uncertain. Output limit exceeded." : "Herdr output limit exceeded.")}
-                    if i==0 {out.append(contentsOf:chunk.prefix(count))}else{err.append(contentsOf:chunk.prefix(count))}
+                    if i==0 {
+                        out.append(contentsOf:chunk.prefix(count))
+                        // hc connect is a long-lived bridge. A matching complete RPC reply,
+                        // rather than bridge EOF, is the command's completion boundary.
+                        if !invocation.responseIDs.isEmpty {
+                            let lines = out.split(separator: 10, omittingEmptySubsequences: true)
+                            let complete = out.last == 10 ? lines : lines.dropLast()
+                            let ids = Set(complete.compactMap { line -> String? in
+                                guard let reply = try? JSONSerialization.jsonObject(with: Data(line)) as? Row,
+                                      reply["jsonrpc"] as? String == "2.0" else { return nil }
+                                return reply["id"] as? String
+                            })
+                            if invocation.responseIDs.isSubset(of: ids) { return String(decoding: out, as: UTF8.self) }
+                        }
+                    }else{err.append(contentsOf:chunk.prefix(count))}
                 } else if errno != EAGAIN && errno != EINTR {throw HUDError("Could not read command output.")}
             }
             if !reaped {reaped=waitpid(pid,&status,WNOHANG)==pid}
