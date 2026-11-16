@@ -528,3 +528,24 @@ Notification excerpts now retain opening sentences or end at a word boundary.
 Native font measurement shortens any remaining overflow before drawing. A separate
 Click to read full reply footer keeps the full chat accessible. No model call is
 made to summarize notifications.
+
+
+## MP4 attachments — November 16, 2026
+
+VideoAttachments stages bounded private copies from actual Finder file URLs or
+1 MiB WebKit chunks. AVFoundation requires a playable video track and generates a
+small JPEG poster; external media references are disabled. Drafts/FIFO snapshots
+carry opaque UUID references, never full movie bytes or user-provided local paths.
+Native metadata and content validation run again before opening/sending. Save
+validation deduplicates tokens and avoids full video hashing on each keystroke.
+
+VideoWebView intercepts all-MP4 native drops and the Paste command; ordinary text
+and image paste remain WebKit responder actions. Mixed file drops use the browser
+file import path. Native offers require a selected chat and are consumed by a
+capacity-checked UI handshake. Cancelling an already owned upload remains possible
+when the panel closes or selection changes. No finalized media is auto-deleted.
+
+prepareMedia enforces local HC agents, resolves private references and adds
+JSON-quoted paths before the existing prompt/expected-turn transport. Existing
+image attachments keep their original delivery path. Queue authorization compares
+ordered persisted video references before consumption. No automatic retry is added.

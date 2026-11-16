@@ -4,6 +4,7 @@ const post=data=>window.webkit?.messageHandlers?.hud ? window.webkit.messageHand
 if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event=>window.receive(event.data));
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
 let orcaSupported=false,orcaOpen=false,orcaStandalone=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
+let supportsVideos=false,videoRequests=new Map();
 let supportsAttachments=false,attachments=new Map(),attachmentLoads=new Map(),attachmentSequence=0,pendingAttachmentBytes=0;
 let supportsPreviews=false,previewMode=false,previewRequestID='';
 let supportsTerminalControls=false,terminalKeyRequests=new Map(),terminalKeyUncertain=new Set(),terminalScreenRendered='',terminalScreenAgent='';
@@ -221,6 +222,7 @@ function closeAttachmentPreview(restore=true){
   if(restore)(attachmentButtons.get(key)||$('attach')).focus();
 }
 function openAttachmentPreview(item){
+  if(item.kind==='video'){request('openVideo',{id:selected,attachment:window.HUDDrafts.serializeAttachment(item)});return;}
   attachmentPreview={key:item.key,id:selected};$('attachment-preview-name').textContent=item.name;
   $('attachment-preview-image').src=item.url;$('attachment-preview-image').alt=item.name;
   $('attachment-preview').showModal();$('attachment-preview-close').focus();
@@ -234,16 +236,51 @@ function renderAttachments(){
   if(!items.length){$('attachments').replaceChildren?.();return;}
   $('attachments').replaceChildren(...items.map(item=>{
     const chip=el('div',undefined,'attachment'),image=el('img'),preview=el('button',undefined,'attachment-thumbnail');image.src=item.url;image.alt='';
-    preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);preview.append(image);preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
+    preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);preview.append(image);if(item.kind==='video')preview.append(el('span','▶','video-play'));preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
     const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||queueSaving||uncertain.has(selected);
     remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));draftChanged();renderHeader();};
-    chip.append(preview,el('span',item.name),remove);return chip;
+    chip.append(preview,el('span',item.name+(item.kind==='video'?' · MP4':'')),remove);return chip;
   }));
+}
+function videoRequest(op,data){return new Promise((resolve,reject)=>{const id=request(op,data);const timer=setTimeout(()=>{videoRequests.delete(id);reject(new Error('Video import timed out. Attach the file again.'));},60000);videoRequests.set(id,{resolve,reject,timer});});}
+function canStageVideos(count){
+  if(!supportsVideos||!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('MP4 files are available for local Claude, Codex and managed OpenCode chats.');return false;}
+  if(imagesFor(selected).length+(attachmentLoads.get(selected)||0)+count>3){notice('Attach up to three images or MP4 videos.');return false;}return true;
+}
+function acceptVideo(id,item){
+  const value=window.HUDDrafts.serializeAttachment(item),next=new Map(attachments);next.set(id,[...imagesFor(id),{...value,key:++attachmentSequence,url:value.poster}]);window.HUDDrafts.snapshot({...draftState(),attachments:next});attachments=next;draftChanged();
+}
+async function stageVideoOffer(data){
+  if(data.id!==selected||!canStageVideos(data.count))return;const id=selected;
+  attachmentLoads.set(id,(attachmentLoads.get(id)||0)+data.count);renderHeader();
+  try{const result=await videoRequest('videoImport',{id,offer:data.offer});for(const item of result.attachments||[])acceptVideo(id,item);}
+  catch(error){notice(error.message||'Could not import video.');}
+  finally{attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-data.count));renderHeader();}
+}
+async function stageVideos(files){
+  if(!files.length||!canStageVideos(files.length))return;const id=selected;
+  if(files.some(f=>!f.size||f.size>100*1024*1024)){notice('MP4 videos must be under 100 MB each.');return;}
+  attachmentLoads.set(id,(attachmentLoads.get(id)||0)+files.length);renderHeader();
+  for(const file of files){let token='';try{
+    token=(await videoRequest('videoBegin',{id,name:file.name,bytes:file.size})).token;
+    for(let offset=0;offset<file.size;offset+=1024*1024){
+      const chunk=file.slice(offset,Math.min(file.size,offset+1024*1024));
+      const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('Could not read video.'));reader.readAsDataURL(chunk);});
+      await videoRequest('videoChunk',{id,token,offset,data});
+    }
+    const result=await videoRequest('videoFinish',{id,token});acceptVideo(id,result.attachment);
+  }catch(error){if(token)request('videoCancel',{id,token});notice(error.message||'Could not import video.');}
+  finally{attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}}
+}
+function stageFiles(files){
+  const list=Array.from(files),videos=list.filter(f=>f.type==='video/mp4'||/\.mp4$/i.test(f.name||'')),images=list.filter(f=>!videos.includes(f));
+  if(imagesFor(selected).length+(attachmentLoads.get(selected)||0)+list.length>3){notice('Attach up to three images or MP4 videos.');return;}
+  if(images.length)stageImages(images);if(videos.length)stageVideos(videos);
 }
 async function stageImages(files){
   if(!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Images are available for local Claude, Codex, and managed OpenCode chats.');return;}
   const id=selected,list=Array.from(files),count=imagesFor(id).length+(attachmentLoads.get(id)||0);
-  const stagedBytes=[...attachments.values(),...[...queues.values()].flat().map(item=>item.images)].flat().reduce((n,item)=>n+item.bytes,0)+pendingAttachmentBytes;
+  const stagedBytes=[...attachments.values(),...[...queues.values()].flat().map(item=>item.images)].flat().reduce((n,item)=>n+(item.kind==='video'?0:item.bytes),0)+pendingAttachmentBytes;
   if(!list.length)return;
   if(stagedBytes+list.reduce((n,f)=>n+f.size,0)>24*1024*1024){notice('Drafts and queued images total 24 MB. Remove an image or queued prompt first.');return;}
   if(count+list.length>3||list.some(f=>!['image/png','image/jpeg','image/webp','image/gif'].includes(f.type)||!f.size||f.size>4*1024*1024)){notice('Attach up to 3 PNG, JPEG, WebP or GIF images, 4 MB each.');return;}
@@ -260,24 +297,25 @@ async function stageImages(files){
   }
 }
 $('attach').onclick=()=>$('attachment-files').click();
-$('attachment-files').onchange=e=>{stageImages(e.target.files);e.target.value='';};
+$('attachment-files').onchange=e=>{stageFiles(e.target.files);e.target.value='';};
 $('prompt').onpaste=e=>{
   const clipboard=e.clipboardData;if(!clipboard)return;
   // Items and files can describe the same clipboard image; use files only as a fallback.
-  let files=Array.from(clipboard.items||[]).filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean);
-  if(!files.length)files=Array.from(clipboard.files||[]).filter(file=>file.type.startsWith('image/'));
+  let files=Array.from(clipboard.items||[]).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);
+  if(!files.length)files=Array.from(clipboard.files||[]);
+  files=files.filter(file=>file.type.startsWith('image/')||file.type==='video/mp4'||/\.mp4$/i.test(file.name||''));
   if(!files.length)return;
   e.preventDefault();
   // A mixed clipboard still inserts its plain text at the current selection.
-  const text=clipboard.getData?.('text/plain');
+  const text=files.some(file=>file.type==='video/mp4'||/\.mp4$/i.test(file.name||''))?'':clipboard.getData?.('text/plain');
   if(text){const input=$('prompt');input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');input.oninput();}
-  stageImages(files);
+  stageFiles(files);
 };
 // Prevent WebKit's default path insertion/navigation for every file drop, including unsupported agents.
 for(const kind of ['dragover','drop'])document.addEventListener(kind,e=>{
   if(!Array.from(e.dataTransfer?.types||[]).includes('Files'))return;
   e.preventDefault();
-  if(kind==='drop'){stageImages(e.dataTransfer.files);}
+  if(kind==='drop'){stageFiles(e.dataTransfer.files);}
 });
 function read(){if(!opened||reading||!active()?.online)return;reading=true;request('output',{id:selected});}
 function renderQueue(){
@@ -291,7 +329,7 @@ function renderQueue(){
   const signature=JSON.stringify([selected,items.map(x=>[x.token,x.text,x.images.length,x.status]),sending,queueSaving]);
   if(panel._signature===signature)return;panel._signature=signature;
   $('queue-items').replaceChildren(...items.map((item,index)=>{
-    const row=el('div',undefined,'queued-prompt');row.append(el('span',`${index+1}. ${item.text.slice(0,150)||'Image prompt'}${item.images.length?` · ${item.images.length} image(s)`:''}`));
+    const row=el('div',undefined,'queued-prompt');row.append(el('span',`${index+1}. ${item.text.slice(0,150)||'Attachment prompt'}${item.images.length?` · ${item.images.length} file(s)`:''}`));
     const remove=el('button',item.status==='uncertain'?'Discard uncertain item':'Remove');remove.disabled=item.status==='pending'||queueSaving||sending;
     remove.onclick=()=>{if(remove.disabled)return;try{window.HUDFollowups.remove(queues,selected,item.token);draftChanged();renderHeader();}catch(error){notice(error.message);}};row.append(remove);return row;
   }));
@@ -341,9 +379,13 @@ function send(){
 }
 function sendPrompt(id,message,images,options={}){
   sending=true;notice('');if(!options.operation)queueHolds.set(id,'await-working');pendingDraftPrompt.add(id);renderHeader();
-  beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
+  beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>x.kind==='video'?window.HUDDrafts.serializeAttachment(x):({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
 }
 window.receive=({type,data})=>{
+  if(type==='videoOffer'){stageVideoOffer(data);return;}
+  if(['videoBegin','videoChunk','videoFinish','videoImport'].includes(type)){const pending=videoRequests.get(data.requestID);if(!pending)return;videoRequests.delete(data.requestID);clearTimeout(pending.timer);if(data.error)pending.reject(new Error(data.error));else pending.resolve(data);return;}
+  if(type==='openVideo'||type==='videoCancel'){if(data.error)notice(data.error);return;}
+
   if(type==='openOrcaModels'){const target=agents.find(a=>a.agent==='opencode'&&a.orca_managed===true);select(target?.id||'');orcaStandalone=!target;orcaOpen=true;renderOrcaPicker();loadOrcaModels();}else if(type==='orcaModels'){
     if(data.requestID!==orcaCatalogRequest)return;orcaCatalogRequest='';
     if(data.error){orcaModels=[];orcaChosen='';$('orca-status').textContent=data.error;}
@@ -392,7 +434,7 @@ window.receive=({type,data})=>{
   else if(type==='nativeApprovalResponse'){const pending=nativeApprovalRequests.get(data.requestID);if(!pending)return;nativeApprovalRequests.delete(data.requestID);nativeApprovalsBusy.delete(pending.token);if(data.error)notice(data.error);renderNativeApprovals();}
   else if(type==='newCodexProgress'){$('new-codex-status').textContent=data.message||'Complete startup in Herdr.';}
   else if(type==='newCodexSession'){newCodexBusy=false;$('new-codex-start').disabled=false;$('new-codex-cancel').disabled=false;if(data.error){$('new-codex-status').textContent=data.error;}else if(data.cancelled){$('new-codex-status').textContent='Choose its project folder to start.';}else{$('new-codex-dialog').close();request('refresh');if(data.id)select(data.id);}}
-  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsVideos=!!data.videoAttachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
   else if(type==='quickPrompts'){quickPrompts=data.prompts;renderQuickPrompts();}
   else if(type==='loadDrafts'){restoreDrafts(data);}
   else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}
@@ -476,14 +518,14 @@ function restoreDrafts(data){
 window.flushDraftsForQuit=async()=>{if(!supportsDrafts)return true;if(!draftsLoaded||storageFailed||!draftPersistence)throw Error('Drafts could not be saved.');await draftPersistence.flush();return true;};
 $('recover-drafts').onclick=()=>{
   const ids=[...new Set([...drafts.keys(),...attachments.keys()])].filter(id=>id!==selected&&((drafts.get(id)||'').length||imagesFor(id).length));
-  $('recovered-list').replaceChildren(...ids.map(id=>{const row=el('div',undefined,'recovered-row');row.append(el('strong',draftLabels.get(id)||'Saved session'),el('p',(drafts.get(id)||'').slice(0,240)),el('small',`${imagesFor(id).length} images`));const copy=el('button','Copy into current draft');copy.disabled=!active()||!draftsLoaded;copy.onclick=()=>{
-    if(imagesFor(selected).length+imagesFor(id).length>3){notice('Remove an image from the current draft first (3 maximum).');return;}
+  $('recovered-list').replaceChildren(...ids.map(id=>{const row=el('div',undefined,'recovered-row');row.append(el('strong',draftLabels.get(id)||'Saved session'),el('p',(drafts.get(id)||'').slice(0,240)),el('small',`${imagesFor(id).length} files`));const copy=el('button','Copy into current draft');copy.disabled=!active()||!draftsLoaded;copy.onclick=()=>{
+    if(imagesFor(selected).length+imagesFor(id).length>3){notice('Remove an attachment from the current draft first (3 maximum).');return;}
     const input=$('prompt'),text=input.value+(input.value.trim()?'\n\n':'')+(drafts.get(id)||''),images=[...imagesFor(selected),...imagesFor(id).map(x=>({...x,key:++attachmentSequence}))];
     try { const state=draftState(),nextDrafts=new Map(drafts),nextImages=new Map(attachments);nextDrafts.set(selected,text);nextImages.set(selected,images);window.HUDDrafts.snapshot({...state,drafts:nextDrafts,attachments:nextImages}); } catch(error){notice(error.message);return;}
     input.value=text;attachments.set(selected,images);if(uncertain.has(id))uncertain.add(selected);if(terminalKeyUncertain.has(id))terminalKeyUncertain.add(selected);input.oninput();$('draft-recovery').close();
   };const remove=el('button','Discard saved draft');remove.onclick=()=>{drafts.delete(id);attachments.delete(id);uncertain.delete(id);terminalKeyUncertain.delete(id);draftChanged();$('recover-drafts').onclick();};row.append(copy,remove);return row;}));
   for(const [id,items] of queues){if(id===selected)continue;for(const item of items){
-    const row=el('div',undefined,'recovered-row');row.append(el('strong',(draftLabels.get(id)||'Saved session')+' · queued prompt'),el('p',item.text.slice(0,240)),el('small',`${item.images.length} images · ${item.status}`));
+    const row=el('div',undefined,'recovered-row');row.append(el('strong',(draftLabels.get(id)||'Saved session')+' · queued prompt'),el('p',item.text.slice(0,240)),el('small',`${item.images.length} files · ${item.status}`));
     const copy=el('button','Copy into current draft');copy.disabled=!active()||!draftsLoaded||item.status==='pending';copy.onclick=()=>{
       const text=$('prompt').value+($('prompt').value.trim()?'\n\n':'')+item.text,images=[...imagesFor(selected),...item.images.map(x=>({...x,key:++attachmentSequence}))];
       try{const state=draftState(),d=new Map(drafts),a=new Map(attachments);d.set(selected,text);a.set(selected,images);window.HUDDrafts.snapshot({...state,drafts:d,attachments:a});}catch(error){notice(error.message);return;}

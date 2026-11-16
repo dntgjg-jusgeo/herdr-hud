@@ -35,5 +35,25 @@ test('backward compatible queue normalization and queue-only rows are retained',
 
 test('loads legacy version one but always writes version two to fail closed on old rollback binaries',()=>{
  const migrated=D.snapshot(D.restore(value([row({images:[]})])));assert.equal(migrated.version,2);assert.equal(migrated.drafts[0].text,'keep me');
- assert.equal(D.snapshot(D.restore({version:2,drafts:[]})).version,2);assert.throws(()=>D.restore({version:3,drafts:[]}));
+ assert.equal(D.snapshot(D.restore({version:2,drafts:[]})).version,2);assert.equal(D.restore({version:3,drafts:[]}).drafts.size,0);
+});
+
+const video=(token='01234567-89ab-cdef-0123-456789abcdef')=>({kind:'video',token,name:'clip.mp4',bytes:104857600,poster:'data:image/jpeg;base64,/9j/2Q==',duration:2,width:640,height:480});
+test('mixed video references round trip, recover and count shared tokens only once',()=>{
+ const v=video(),saved={version:3,drafts:[row({images:[{name:'image.png',data:png},v],queue:[{token:'q',text:'next',images:[v],status:'pending'}]})]};
+ const state=D.restore(saved),snap=D.snapshot(state);assert.equal(snap.version,3);assert.deepEqual(snap.drafts[0].images,[{data:png,name:'image.png'},v]);assert.deepEqual(snap.drafts[0].queue[0].images,[v]);assert.equal(snap.drafts[0].queue[0].status,'uncertain');
+ const merged=D.mergeRestored(snap,D.restore(saved),new Set(['exact identity']));assert.equal(merged.attachments.get('exact identity').length,2);
+ assert.throws(()=>D.restore({...saved,version:2}));
+ for(const patch of [{token:'BAD'},{bytes:0},{poster:'data:image/jpeg;base64,AAAA'},{poster:'data:image/png;base64,/9j/2Q=='},{duration:Infinity},{name:'../clip'}])assert.throws(()=>D.restore({version:3,drafts:[row({images:[{...v,...patch}]})]}));
+ assert.throws(()=>D.restore({version:3,drafts:[row({images:[v,{...v,bytes:1}]})]}));
+ const tooMany=Array.from({length:6},(_,i)=>row({id:String(i),images:[video(`01234567-89ab-cdef-0123-${String(i).padStart(12,'0')}`)]}));assert.throws(()=>D.restore({version:3,drafts:tooMany}));
+});
+
+test('repeated posters across composer and queue are bounded before persistence',()=>{
+ const v=video();v.poster='data:image/jpeg;base64,/9j/'+ 'A'.repeat(349972); // valid base64 and within the individual cap
+ const rows=Array.from({length:6},(_,i)=>row({id:String(i),images:i===0?[v]:[],queue:i===0?[]:[{token:'q'+i,text:'',images:[v],status:'queued'}]}));
+ assert.throws(()=>D.restore({version:3,drafts:rows}));
+ const accepted=D.restore({version:3,drafts:rows.slice(0,5)});accepted.queues.set('extra',[{token:'extra',text:'',images:[v],status:'queued'}]);
+ assert.throws(()=>D.snapshot(accepted));
+ for(const patch of [{name:'clip.mov'},{name:'clip\n.mp4'},{width:1.5},{height:16385},{width:8000,height:8000},{duration:86401}])assert.throws(()=>D.restore({version:3,drafts:[row({images:[{...video(),...patch}]})]}));
 });

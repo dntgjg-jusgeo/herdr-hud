@@ -5,11 +5,11 @@ class Node{constructor(){this.children=[];this.value='';this.style={};this.disab
 function harness(){
  const nodes=new Map(),messages=[],listeners={},reads=[];
  const document={getElementById(id){if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);},createElement:()=>new Node(),createTextNode:text=>({textContent:text}),addEventListener(t,fn){listeners[t]=fn;}};
- const window={webkit:{messageHandlers:{hud:{postMessage:m=>messages.push(m)}}}};
+ const window={HUDDrafts:require('../Sources/HerdrHUD/Resources/drafts.js'),webkit:{messageHandlers:{hud:{postMessage:m=>messages.push(m)}}}};
  class FileReader{readAsDataURL(file){reads.push(()=>{this.result='data:image/png;base64,YWJj';this.onload();});}}
  class Image{set src(v){this.naturalWidth=4;this.naturalHeight=4;this.onload();}}
  const HUDModel=require('../Sources/HerdrHUD/Resources/model.js');
- const context=vm.createContext({window,document,FileReader,Image,HUDModel,setInterval(){},console});vm.runInContext(source,context);
+ const context=vm.createContext({window,document,FileReader,Image,HUDModel,setInterval(){},setTimeout,clearTimeout,console});vm.runInContext(source,context);
  vm.runInContext("supportsAttachments=true;agents=[{id:'A',online:true,can_attach:true,agent_status:'idle',agent:'codex'},{id:'B',online:true,can_attach:true,agent_status:'idle',agent:'claude'}];selected='A'",context);
  return {context,messages,reads,listeners,$:id=>document.getElementById(id),eval:s=>vm.runInContext(s,context)};
 }
@@ -65,4 +65,20 @@ test('attachment preview opens and closes without sending or changing the draft'
  current.click();h.$('attachment-preview-close').click();assert.equal(h.$('attachment-preview').open,false);
  current.click();h.eval("select('B')");assert.equal(h.$('attachment-preview').open,false);assert.equal(h.eval("imagesFor('A').length"),1);
  h.context.window.handleEscape();assert.equal(h.messages.filter(m=>m.op==='close').length,1);
+});
+
+const video={kind:'video',token:'12345678-1234-1234-1234-123456789abc',name:'clip.mp4',bytes:30,poster:'data:image/jpeg;base64,/9j/2Q==',duration:1,width:64,height:64};
+test('native MP4 paste/drop offer stages a preview token and sends no path until Send',async()=>{
+ const h=harness();h.eval('supportsVideos=true');h.context.window.receive({type:'videoOffer',data:{id:'A',offer:'opaque',count:1}});
+ const imported=h.messages.find(m=>m.op==='videoImport');assert.ok(imported);assert.equal(h.$('send').disabled,true);
+ h.context.window.receive({type:'videoImport',data:{requestID:imported.requestID,id:'A',attachments:[video]}});await tick();
+ assert.equal(h.eval("imagesFor('A')[0].kind"),'video');assert.equal(h.$('prompt').value,'');h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,'openVideo');assert.equal(h.messages.at(-1).attachment.token,video.token);
+ assert.equal(h.messages.some(m=>m.op==='prompt'),false);h.eval('send()');const sent=h.messages.find(m=>m.op==='prompt');assert.equal(sent.attachments[0].token,video.token);assert.equal(sent.attachments[0].data,undefined);
+});
+test('MP4 clipboard files suppress path text and request bounded native import',async()=>{
+ const h=harness();h.eval('supportsVideos=true');let prevented=false;
+ const file={name:'clip.mp4',type:'video/mp4',size:30,slice(){return this;}};
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',type:'video/mp4',getAsFile:()=>file}],files:[file],getData:()=>'/private/example/clip.mp4'}});
+ assert.equal(prevented,true);assert.equal(h.$('prompt').value,'');const started=h.messages.find(m=>m.op==='videoBegin');assert.ok(started);assert.equal(h.messages.filter(m=>m.op==='videoBegin').length,1);
+ h.context.window.receive({type:'videoBegin',data:{requestID:started.requestID,error:'fixture refusal'}});await tick();assert.equal(h.eval("attachmentLoads.get('A')"),0);assert.equal(h.messages.some(m=>m.op==='prompt'),false);
 });

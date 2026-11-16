@@ -62,6 +62,10 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     let previews = PreviewGallery()
     let fileLinks = FileLinks(), draftStore = DraftStore()
     let orcaModels = OrcaModels(), orcaCatalogWork = DispatchQueue(label:"herdr-hud.orca-catalog",qos:.userInitiated)
+    let videoStore=VideoAttachments(), videoWork=DispatchQueue(label:"herdr-hud.video",qos:.userInitiated)
+    var videoPreview:VideoPreview?
+    var videoOffers:[String:([URL],String,Date)]=[:]
+    var videoImports:[String:String]=[:] // videoWork only: upload token -> exact agent ID
     var orcaLaunching = false
     var orcaUncertain = Set<String>() // work queue only; survives adapter recreation
     lazy var orcaLauncher = OrcaSessionLauncher(client:client.hc,opencode:NSHomeDirectory()+"/.opencode/bin/opencode",onTerminalCreated:{ address in
@@ -103,7 +107,8 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         let config = WKWebViewConfiguration()
         config.userContentController.add(self,name:"hud")
         config.websiteDataStore = .nonPersistent()
-        web = WKWebView(frame:panel.contentView!.bounds,configuration:config)
+        let videoWeb=VideoWebView(frame:panel.contentView!.bounds,configuration:config)
+        videoWeb.videoFiles={ [weak self] urls in self?.offerVideos(urls) };web=videoWeb
         web.autoresizingMask = [.width,.height]; web.navigationDelegate = self; web.uiDelegate = self
         web.setValue(false,forKey:"drawsBackground")
         panel.contentView = web
@@ -156,11 +161,15 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         let main = NSMenu()
         let application = NSMenuItem(title:"Herdr HUD",action:nil,keyEquivalent:"")
         let applicationMenu = NSMenu(title:"Herdr HUD")
+        let closeVideoItem = menuItem("Close Video Preview",#selector(closeVideoPreview))
+        closeVideoItem.keyEquivalent = "w"; applicationMenu.addItem(closeVideoItem)
         let quitItem = menuItem("Quit Herdr HUD",#selector(quit))
         quitItem.keyEquivalent = "q"; applicationMenu.addItem(quitItem)
         application.submenu = applicationMenu; main.addItem(application)
         let edit = NSMenuItem(title:"Edit",action:nil,keyEquivalent:"")
-        edit.submenu = editorMenu(); main.addItem(edit)
+        edit.submenu = editorMenu()
+        if let paste=edit.submenu?.items.first(where:{$0.title == "Paste"}) {paste.action=#selector(pasteWithVideos);paste.target=self}
+        main.addItem(edit)
         NSApp.mainMenu = main
         let menu = NSMenu()
         menu.addItem(menuItem("Open / close agents",#selector(togglePanel)))
@@ -270,12 +279,12 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
  if self.visible { self.emit("roster",data) }; self.diagnostics()
         } }
     }
-    func emit(_ type: String, _ data: Row) { guard ready else { return }; web.evaluateJavaScript("window.receive(" + encode(["type":type,"data":data]) + ")",completionHandler:nil) }
+    func emit(_ type: String, _ data: Row) { guard ready else { return }; web.evaluateJavaScript("window.receive(" + encode(["type":type,"data":data]) + ")") { _,error in if let error=error as NSError? {let detail=error.userInfo["WKJavaScriptExceptionMessage"] as? String ?? error.localizedDescription;try? encode(["event":type,"error":detail]).write(to:self.support.appendingPathComponent("ui-error.json"),atomically:true,encoding:.utf8)} } }
     func userContentController(_ userContentController: WKUserContentController,didReceive message: WKScriptMessage) {
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
             if CommandLine.arguments.contains("--orca-models") {openPanel();emit("openOrcaModels",[:])}
         case "orcaModels":
             guard client.usesHC,panelOpen,!requestID.isEmpty else { emit(operation,["requestID":requestID,"error":"Open the HUD to load OrcaRouter models."]);return }
@@ -363,13 +372,38 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     DispatchQueue.main.async { self.launchingCodex=false;self.emit("newCodexSession",value);self.refresh() }
                 }
             }
+        case "videoBegin", "videoChunk", "videoFinish", "videoCancel", "videoImport", "openVideo":
+            guard client.usesHC,!requestID.isEmpty,let id=data["id"] as? String,(operation == "videoCancel" || (panelOpen && (operation == "openVideo" || id==selected))) else {emit(operation,["requestID":requestID,"error":"Select the same local chat before attaching video."]);return}
+            let offer = operation == "videoImport" ? videoOffers.removeValue(forKey:data["offer"] as? String ?? "") : nil
+            videoWork.async {
+                var result:Row=["requestID":requestID,"id":id]
+                do {
+                    if operation == "openVideo" {
+                        let url=try self.videoStore.reference(data["attachment"] as? Row ?? [:])
+                        DispatchQueue.main.async {self.videoPreview?.stop();let preview=VideoPreview(url:url,name:(data["attachment"] as? Row)?["name"] as? String ?? "Video preview");self.videoPreview=preview;preview.window?.level=NSWindow.Level(rawValue:self.panel.level.rawValue+1);preview.showWindow(nil);preview.window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
+                    } else if operation == "videoImport" {
+                        guard let offer=offer,offer.1==id,Date().timeIntervalSince(offer.2)<60,offer.0.count<=3 else{throw HUDError("Video drop expired. Drop or paste the files again.")}
+                        result["attachments"]=try offer.0.map{try self.videoStore.importFile($0)}
+                    } else if operation == "videoBegin" {
+                        guard let name=data["name"] as? String,let bytes=data["bytes"] as? Int else{throw HUDError("Invalid video attachment.")}
+                        let token=try self.videoStore.begin(name:name,bytes:bytes);self.videoImports[token]=id;result["token"]=token
+                    } else {
+                        guard let token=data["token"] as? String,self.videoImports[token]==id else{throw HUDError("Video upload changed. Attach the file again.")}
+                        if operation == "videoChunk" {guard let offset=data["offset"] as? Int,let bytes=data["data"] as? String else{throw HUDError("Invalid video chunk.")};try self.videoStore.append(token:token,offset:offset,dataBase64:bytes)}
+                        else if operation == "videoFinish" {result["attachment"]=try self.videoStore.finish(token:token);self.videoImports.removeValue(forKey:token)}
+                        else {self.videoStore.cancel(token:token);self.videoImports.removeValue(forKey:token)}
+                    }
+                    result["ok"]=true
+                }catch{result["error"]=error.localizedDescription}
+                let value=result;DispatchQueue.main.async{self.emit(operation,value)}
+            }
         case "loadDrafts", "saveDrafts":
             guard !requestID.isEmpty else { return }
             draftWork.async {
                 var result: Row = ["requestID":requestID]
                 do {
                     if operation == "loadDrafts" { result["snapshot"] = try self.draftStore.load() }
-                    else { try self.draftStore.save(data["snapshot"] ?? [:]); result["ok"] = true }
+                    else {let snapshot=try DraftStore.validate(data["snapshot"] ?? [:]);try self.videoWork.sync {var seen=Set<String>();for row in snapshot["drafts"] as? [Row] ?? [] {let groups=[row["images"] as? [Row] ?? []]+(row["queue"] as? [Row] ?? []).map{$0["images"] as? [Row] ?? []};for group in groups {for item in group where item["kind"] as? String == "video" {if let token=item["token"] as? String,seen.insert(token).inserted {_ = try self.videoStore.reference(item,verifyContent:false)}}}}};try self.draftStore.save(snapshot); result["ok"] = true }
                 } catch { result["error"] = error.localizedDescription }
                 let value=result
                 DispatchQueue.main.async { self.emit(operation,value) }
@@ -485,11 +519,12 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     if operation == "output" {result = id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)}
                     else if self.client.usesHC {
                         let row=try self.client.hc.resolve(id)
+                        let prepared=try self.prepareMedia(message:data["message"] as? String ?? "",attachments:data["attachments"],row:row)
                         if row["agent"] as? String == "opencode" {
                             guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("This OpenCode session is not managed by the HUD.")}
                             guard !self.orcaUncertain.contains(id) else {throw HUDError("OpenCode delivery uncertain. Inspect Herdr before sending again.")}
-                            result=try adapter.prompt(text:data["message"] as? String ?? "",attachments:ImageAttachment.parse(data["attachments"]));result["id"]=id
-                        }else{result=try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])}
+                            result=try adapter.prompt(text:prepared.0,attachments:ImageAttachment.parse(prepared.1));result["id"]=id
+                        }else{result=try self.client.prompt(id,prepared.0,attachments:prepared.1)}
                     } else {result=try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])}
                 }
                 catch {let unknown=(error as? OrcaOpenCode.Failure)?.uncertain ?? false;if unknown{self.orcaUncertain.insert(id)};result = ["error":error.localizedDescription, "id":id,"uncertain":unknown] }
@@ -520,11 +555,35 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         }
         data["agents"]=rows
     }
+    @objc func closeVideoPreview() {videoPreview?.stop();videoPreview=nil}
+    @objc func pasteWithVideos(_ sender:Any?) {
+        if panelOpen,NSApp.keyWindow === panel,(web as? VideoWebView)?.pasteVideos() == true {return}
+        NSApp.sendAction(NSSelectorFromString("paste:"),to:nil,from:sender)
+    }
+    func offerVideos(_ urls:[URL]) {
+        guard panelOpen,client.usesHC,!selected.isEmpty else{return}
+        videoOffers=videoOffers.filter{Date().timeIntervalSince($0.value.2)<60}
+        guard urls.count<=3,videoOffers.count<8 else{emit("notice",["message":"Attach up to three files at a time."]);return}
+        let token=UUID().uuidString;videoOffers[token]=(urls,selected,Date())
+        emit("videoOffer",["id":selected,"offer":token,"count":urls.count])
+    }
+    // Video delivery is a local file reference, never an image or a video-vision claim.
+    func prepareMedia(message:String,attachments:Any?,row:Row)throws -> (String,[Row]) {
+        guard attachments == nil || attachments is [Row] else{throw HUDError("Invalid attachments.")}
+        let items=attachments as? [Row] ?? [];guard items.count<=3 else{throw HUDError("Attach up to three files.")}
+        let videos=items.filter{$0["kind"] as? String == "video"},images=items.filter{$0["kind"] as? String != "video"}
+        guard videos.isEmpty || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("MP4 attachments require a local Claude, Codex or managed OpenCode chat.")}
+        let paths=try videoWork.sync{try videos.map{try videoStore.reference($0).path}}
+        var text=message
+        if !paths.isEmpty{text += "\n\n[HUD attached videos]\nThese are local MP4 files. Use available video tools to inspect them; if video analysis is unavailable, say so. Each line is a JSON-quoted file path:\n"+paths.map{encode($0)}.joined(separator:"\n")+"\n[/HUD attached videos]"}
+        guard text.utf8.count<=60000 else{throw HUDError("Prompt and video references exceed 60 KB.")}
+        return(text,images)
+    }
     func performNativeSteer(id:String,turn:String,message:String,attachments:Any?,requestID:String) {
         let epoch=codexApprovalEpochs[id],fingerprint=codexApprovalBindings[id]
         work.async {
             do {
-                let images=try ImageAttachment.parse(attachments),row=try self.client.hc.resolve(id)
+                let row=try self.client.hc.resolve(id),prepared=try self.prepareMedia(message:message,attachments:attachments,row:row),images=try ImageAttachment.parse(prepared.1)
                 guard row["agent_status"] as? String == "working",row["agent"] as? String == "codex",
                       let binding=try self.codexLauncher.binding(for:row),let fingerprint=fingerprint,encode(binding)==fingerprint else{throw HUDError("This working Codex session changed. Your draft is retained.")}
                 DispatchQueue.main.async {
@@ -534,7 +593,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     // Private image copying and validation stay off the UI thread.
                     self.work.async {
                         do {
-                            try bridge.steer(expectedTurnID:turn,text:message,attachments:images){result in
+                            try bridge.steer(expectedTurnID:turn,text:prepared.0,attachments:images){result in
                                 if result["uncertain"] as? Bool == true{self.codexSteerUncertain.insert(id)}
                                 self.emit("nativeSteer",result.merging(["requestID":requestID,"id":id],uniquingKeysWith:{_,new in new}))
                             }
@@ -632,9 +691,9 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
         guard frame.isMainFrame, panelOpen else { completionHandler(nil); return }
         let picker = NSOpenPanel()
-        picker.title = "Attach images (up to 3, 4 MB each)"
+        picker.title = "Attach images or MP4 videos (up to 3 files)"
         picker.canChooseDirectories = false; picker.canChooseFiles = true; picker.allowsMultipleSelection = true
-        picker.allowedContentTypes = [.png,.jpeg,.gif,UTType(filenameExtension:"webp") ?? .image]
+        picker.allowedContentTypes = [.png,.jpeg,.gif,UTType(filenameExtension:"webp") ?? .image,.mpeg4Movie]
         picker.beginSheetModal(for:panel) { response in
             completionHandler(response == .OK ? picker.urls : nil)
         }

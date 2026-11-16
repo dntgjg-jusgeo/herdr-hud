@@ -11,12 +11,12 @@
   }
   function enqueue(queues,id,{token,text,images}){
     const items=checked(queues,id);
-    const next={token,text,images:(images||[]).map(image=>({name:image.name,data:image.data})),status:'queued'};
+    const next={token,text,images:(images||[]).map(D.serializeAttachment),status:'queued'};
     const candidate=new Map(queues);candidate.set(id,[...items,next]);
     // Reuse the exact snapshot validator, including aggregate queue bounds and
     // raster checks. The app's full snapshot also shares limits with drafts.
     const rows=[...candidate].map(([id,queue])=>({id,label:'Queued prompts',text:'',images:[],uncertain:false,keyUncertain:false,queue}));
-    const normalized=D.restore({version:1,drafts:rows}).queues;
+    const normalized=D.restore({version:3,drafts:rows}).queues;
     const accepted=normalized.get(id).at(-1);
     queues.set(id,[...items,accepted]);return accepted;
   }

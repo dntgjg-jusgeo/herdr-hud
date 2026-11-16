@@ -130,6 +130,25 @@ If that mode is unavailable, **Queue prompt**
 remains available. Queued terminal prompts start after the current task finishes;
 they do not steer it mid-task.
 
+### MP4 attachments on macOS
+
+Drop MP4 files into the HUD, copy an MP4 in Finder and paste with Command-V,
+or use **Attach files**. Up to three images/videos can be attached together;
+MP4s may be up to 100 MB each. A thumbnail with a play badge appears in the
+composer. Click it to open the private copy in the HUD’s video player.
+
+Videos stay with their exact draft or queued prompt, including after restart.
+The HUD keeps a private local copy; moving the original does not break the draft.
+On Send, local Claude, Codex and managed OpenCode receive a JSON-quoted local file
+reference and instructions to use available video tools. This does not guarantee
+native video understanding. Remote agents are not supported for video attachments.
+No video is sent to an external service merely by attaching or previewing it.
+
+Video cache storage is capped at 512 MB/128 clips. Completed copies are retained
+because sent or uncertain prompts may still need them. Incomplete imports expire.
+Snapshots containing videos use version 3; older HUD builds refuse these rather
+than silently dropping attachments. Image-only snapshots remain version 2.
+
 ### OrcaRouter models through OpenCode
 
 On macOS, **Orca models** appears inside a managed OrcaRouter OpenCode conversation and opens a searchable, collapsible model picker. It stays hidden for Claude, Codex and other OpenCode agents. Herdr’s OrcaRouter launcher can still open the picker to create the first chat. Select a

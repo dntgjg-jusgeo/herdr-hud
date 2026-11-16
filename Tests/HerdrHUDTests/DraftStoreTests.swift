@@ -93,5 +93,32 @@ final class DraftStoreTests: XCTestCase {
         XCTAssertThrowsError(try DraftStore.authorizeQueuedPrompt(queueSnapshot([queued("queued")]),id:"exact-agent-identity",token:"queued",text:"Next task",attachments:nil))
         XCTAssertThrowsError(try DraftStore.authorizeQueuedPrompt(saved,id:"exact-agent-identity",token:"first",text:"Original follow-up",attachments:[["data":"different"]]))
     }
+    func videoReference()->Row {
+        let image=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:4,pixelsHigh:4,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!.representation(using:.jpeg,properties:[:])!
+        return ["kind":"video","token":UUID().uuidString.lowercased(),"name":"clip.mp4","bytes":100,"poster":"data:image/jpeg;base64,"+image.base64EncodedString(),"duration":1.0,"width":32,"height":32]
+    }
+    func testVideoVersionThreeQueueAuthorizationAndRecoveryWithoutCacheIO()throws {
+        let video=videoReference();var saved=queueSnapshot([queued("video-head",status:"pending",images:[video])]);saved["version"]=3
+        let normalized=try DraftStore.validate(saved)
+        XCTAssertEqual(normalized["version"] as? Int,3)
+        XCTAssertNoThrow(try DraftStore.authorizeQueuedPrompt(saved,id:"exact-agent-identity",token:"video-head",text:"Next task",attachments:[video]))
+        var changed=video;changed["token"]=UUID().uuidString.lowercased()
+        XCTAssertThrowsError(try DraftStore.authorizeQueuedPrompt(saved,id:"exact-agent-identity",token:"video-head",text:"Next task",attachments:[changed]))
+        saved["version"]=2;XCTAssertThrowsError(try DraftStore.validate(saved))
+        let root=folder();defer{try? FileManager.default.removeItem(at:root)}
+        let store=DraftStore(directory:root);_=try store.load();try store.save(normalized)
+        XCTAssertEqual(try store.load()["version"] as? Int,3)
+    }
+    func testRepeatedVideoPostersShareBoundedSnapshotBudgetAndMixedCountLimit()throws {
+        var video=videoReference()
+        let prefix="data:image/jpeg;base64,",jpeg=Data(base64Encoded:String((video["poster"] as! String).dropFirst(prefix.count)))!+Data(repeating:0,count:20000)
+        video["poster"]=prefix+jpeg.base64EncodedString()
+        var rows:[Row]=[]
+        for i in 0..<128{rows.append(["id":"agent-\(i)","text":"","images":[video],"uncertain":false,"keyUncertain":false])}
+        XCTAssertThrowsError(try DraftStore.validate(["version":3,"drafts":rows]))
+        rows[0]["images"]=[video,video,video,video]
+        XCTAssertThrowsError(try DraftStore.validate(["version":3,"drafts":[rows[0]]]))
+        XCTAssertEqual(try DraftStore.validate(["version":3,"drafts":[Row]()])["version"] as? Int,2)
+    }
 
 }

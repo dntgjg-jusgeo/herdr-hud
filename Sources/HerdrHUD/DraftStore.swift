@@ -12,6 +12,7 @@ final class DraftStore {
     static let maximumFileBytes = 36 * 1024 * 1024
     static let maximumQueuePerSession = 16
     static let maximumQueueCount = 128
+    static let maximumPosterBytes = 2 * 1024 * 1024
     let directory: URL
     private var loaded = false
 
@@ -44,13 +45,24 @@ final class DraftStore {
     }
     static func validate(_ value: Any) throws -> Row {
         func invalid() -> HUDError { HUDError("Draft snapshot is invalid or exceeds its storage limit. Existing drafts and queued prompts have been retained.") }
-        guard let snapshot = value as? Row, let version = snapshot["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), [1.0,2.0].contains(version.doubleValue),
+        guard let snapshot = value as? Row, let version = snapshot["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), [1.0,2.0,3.0].contains(version.doubleValue),
               let rows = snapshot["drafts"] as? [Row], rows.count <= maximumDrafts else { throw invalid() }
-        var result:[Row] = [], ids = Set<String>(), tokens = Set<String>(), totalText = 0, totalImages = 0, queueCount = 0
+        var result:[Row] = [], ids = Set<String>(), tokens = Set<String>(), totalText = 0, totalImages = 0, queueCount = 0, hasVideo=false
+        var videos:[String:Row]=[:],totalVideos=0,totalPosters=0
         func parsedImages(_ images: [Row]) throws -> [Row] {
-            let parsed = try ImageAttachment.parse(images)
             var safeImages:[Row] = []
-            for (image, original) in zip(parsed,images) {
+            for original in images {
+                if original["kind"] as? String == "video" {
+                    guard version.doubleValue==3 else{throw invalid()}
+                    let safe=try VideoAttachments.validateReference(original),token=safe["token"] as! String
+                    totalPosters+=(safe["poster"] as! String).utf8.count
+                    guard totalPosters<=maximumPosterBytes else{throw invalid()}
+                    if let previous=videos[token] {guard NSDictionary(dictionary:previous).isEqual(to:safe) else{throw invalid()}}
+                    else {videos[token]=safe;totalVideos+=safe["bytes"] as! Int}
+                    guard totalVideos<=VideoAttachments.maximumCacheBytes,videos.count<=VideoAttachments.maximumAssets else{throw invalid()}
+                    hasVideo=true;safeImages.append(safe);continue
+                }
+                guard original["kind"] == nil || original["kind"] as? String == "image",let image=try ImageAttachment.parse([original]).first else{throw invalid()}
                 totalImages += image.data.count
                 guard totalImages <= maximumImageBytes, let name = original["name"] as? String,
                       !name.isEmpty, name.utf8.count <= 480, !name.contains("\0"), !name.contains("/"), !name.contains("\\") else { throw invalid() }
@@ -88,7 +100,7 @@ final class DraftStore {
                 if !queue.isEmpty { normalized["queue"] = queue };result.append(normalized)
             }
         }
-        return ["version":2,"drafts":result]
+        return ["version":hasVideo ? 3:2,"drafts":result]
     }
     /// Background delivery is authorized only by the exact persisted FIFO head.
     /// The caller also consumes this token once per app incarnation before IO.
@@ -103,7 +115,9 @@ final class DraftStore {
         if let attachments = attachments { guard let images = attachments as? [Row] else { throw refused() };supplied = images } else { supplied = [] }
         guard supplied.count == expected.count else { throw refused() }
         for (image,saved) in zip(supplied,expected) {
-            guard let data = image["data"] as? String, data == saved["data"] as? String else { throw refused() }
+            if saved["kind"] as? String == "video" {
+                guard let actual=try? VideoAttachments.validateReference(image),NSDictionary(dictionary:actual).isEqual(to:saved) else{throw refused()}
+            } else {guard image["kind"] == nil || image["kind"] as? String == "image",let data = image["data"] as? String,data == saved["data"] as? String else { throw refused() }}
         }
     }
     func load() throws -> Row {

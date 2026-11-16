@@ -45,3 +45,12 @@ test('startup merge keeps saved FIFO and cannot rebind token to another session'
 test('queue helper accepts the browser map realm used by host integration fixtures',()=>{
  const queues=vm.runInNewContext('new Map()');Q.enqueue(queues,'codex',item('realm'));assert.equal(Q.head(queues,'codex').token,'realm');
 });
+
+test('video queue references survive and equality checks token and metadata',()=>{
+ const video={kind:'video',token:'01234567-89ab-cdef-0123-456789abcdef',name:'clip.mp4',bytes:20,poster:'data:image/jpeg;base64,/9j/2Q==',duration:1,width:20,height:10};
+ const queues=new Map();Q.enqueue(queues,'codex',{token:'q',text:'',images:[image(),video]});
+ const saved=D.snapshot(state(queues));assert.equal(saved.version,3);assert.deepEqual(saved.drafts[0].queue[0].images[1],video);
+ const restored=D.restore(saved);assert.equal(restored.queues.get('codex')[0].images[1].token,video.token);
+ const current=state(new Map([['codex',[{token:'q',text:'',images:[image(),{...video,token:'11234567-89ab-cdef-0123-456789abcdef'}],status:'queued'}]]]));
+ assert.throws(()=>D.mergeRestored(saved,current));
+});
