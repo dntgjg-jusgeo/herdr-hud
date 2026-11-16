@@ -1,7 +1,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const source=fs.readFileSync(path.join(__dirname,'../Sources/HerdrHUD/Resources/app.js'),'utf8');
-class Node{constructor(){this.children=[];this.value='';this.style={};this.disabled=false;}append(...n){this.children.push(...n);}replaceChildren(...n){this.children=n;}setAttribute(){}querySelectorAll(){return [];}click(){this.onclick?.();}}
+class Node{constructor(){this.children=[];this.value='';this.style={};this.disabled=false;this.listeners={};this.selectionStart=0;this.selectionEnd=0;}append(...n){this.children.push(...n);}replaceChildren(...n){this.children=n;}setAttribute(){}querySelectorAll(){return [];}click(){this.onclick?.();}addEventListener(t,fn){this.listeners[t]=fn;}setRangeText(text,start,end){this.value=this.value.slice(0,start)+text+this.value.slice(end);this.selectionStart=this.selectionEnd=start+text.length;}}
 function harness(){
  const nodes=new Map(),messages=[],listeners={},reads=[];
  const document={getElementById(id){if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);},createElement:()=>new Node(),createTextNode:text=>({textContent:text}),addEventListener(t,fn){listeners[t]=fn;}};
@@ -35,4 +35,18 @@ test('unsupported drop cannot insert paths, and malformed/oversize files never r
  const h=harness();h.eval('supportsAttachments=false');let prevented=false;
  h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{type:'image/png',size:3,name:'image.png'}]}});assert.equal(prevented,true);assert.equal(h.reads.length,0);
  h.eval("supportsAttachments=true;stageImages([{type:'image/svg+xml',size:3,name:'unsafe.svg'}]);stageImages([{type:'image/png',size:5000000,name:'large.png'}])");assert.equal(h.reads.length,0);
+});
+test('paste stages an item image once, preserves mixed text, and waits for Send',async()=>{
+ const h=harness(),file={type:'image/png',name:'screenshot.png',size:3};let prevented=false;
+ h.$('prompt').value='before after';h.$('prompt').selectionStart=7;h.$('prompt').selectionEnd=7;
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',type:file.type,getAsFile:()=>file}],files:[file],getData:()=> 'text '}});
+ assert.equal(prevented,true);assert.equal(h.$('prompt').value,'before text after');assert.equal(h.eval("drafts.get('A')"),'before text after');assert.equal(h.reads.length,1);
+ h.reads[0]();await tick();assert.equal(h.eval("imagesFor('A').length"),1);assert.equal(h.messages.filter(m=>m.op==='prompt').length,0);
+});
+test('text paste remains native; file fallback handles images including unsupported types',async()=>{
+ const h=harness();let prevented=false;
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'string',type:'text/plain'}],files:[]}});assert.equal(prevented,false);assert.equal(h.reads.length,0);
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[],files:[{type:'image/png',name:'paste.png',size:3}],getData:()=>''}});assert.equal(prevented,true);assert.equal(h.reads.length,1);
+ h.reads[0]();await tick();assert.equal(h.eval("imagesFor('A').length"),1);
+ prevented=false;h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[],files:[{type:'image/tiff',name:'paste.tiff',size:3}],getData:()=>''}});assert.equal(prevented,true);assert.equal(h.reads.length,1);
 });

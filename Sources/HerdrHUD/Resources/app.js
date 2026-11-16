@@ -116,6 +116,18 @@ async function stageImages(files){
 }
 $('attach').onclick=()=>$('attachment-files').click();
 $('attachment-files').onchange=e=>{stageImages(e.target.files);e.target.value='';};
+$('prompt').onpaste=e=>{
+  const clipboard=e.clipboardData;if(!clipboard)return;
+  // Items and files can describe the same clipboard image; use files only as a fallback.
+  let files=Array.from(clipboard.items||[]).filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean);
+  if(!files.length)files=Array.from(clipboard.files||[]).filter(file=>file.type.startsWith('image/'));
+  if(!files.length)return;
+  e.preventDefault();
+  // A mixed clipboard still inserts its plain text at the current selection.
+  const text=clipboard.getData?.('text/plain');
+  if(text){const input=$('prompt');input.setRangeText(text,input.selectionStart,input.selectionEnd,'end');input.oninput();}
+  stageImages(files);
+};
 // Prevent WebKit's default path insertion/navigation for every file drop, including unsupported agents.
 for(const kind of ['dragover','drop'])document.addEventListener(kind,e=>{
   if(!Array.from(e.dataTransfer?.types||[]).includes('Files'))return;
