@@ -4,6 +4,27 @@
   function sorted(agents,unread){return agents.map((agent,index)=>({agent,index})).sort((a,b)=>priority(a.agent,unread)-priority(b.agent,unread)||a.index-b.index).map(x=>x.agent);}
   function identity(a){return JSON.stringify([a.id,a.terminal_id,a.agent_session||null]);}
   function alerts(previous,current){const old=new Map(previous.map(a=>[a.id,a]));return current.filter(a=>{const b=old.get(a.id);return a.online&&b?.online&&identity(a)===identity(b)&&((a.agent_status==='blocked'&&b.agent_status!=='blocked')||(b.agent_status==='working'&&['idle','done'].includes(a.agent_status)));});}
+  // Display-only recognition: this never creates terminal actions or authorization.
+  // Unknown layouts stay verbatim. Require the complete Computer Use menu envelope,
+  // not merely a numbered list that could be ordinary agent output.
+  function approval(lines){
+    const footer=lines.findIndex(line=>/^\s*enter to submit\s*[|·]\s*esc to cancel\s*$/i.test(line));
+    if(footer<0)return null;
+    let start=-1;
+    for(let i=footer-1;i>=0;i--)if(/^\s*Allow Computer Use\b/.test(lines[i])){start=i;break;}
+    if(start<0)return null;
+    let first=-1;const options=[];
+    for(let i=start+1;i<footer;i++){
+      const match=/^\s*([›❯>])?\s*([1-4])\.\s+(Allow for this session|Always allow|Allow|Cancel)(?:\s{2,}(.*?))?\s*$/.exec(lines[i]);
+      if(match){if(first<0)first=i;options.push({number:Number(match[2]),label:match[3],selected:!!match[1],description:match[4]?[match[4]]:[]});}
+      else if(first>=0&&lines[i].trim())options.at(-1).description.push(lines[i].trim());
+    }
+    const labels=['Allow','Allow for this session','Always allow','Cancel'];
+    if(options.length!==4||options.some((o,i)=>o.number!==i+1||o.label!==labels[i])||options.filter(o=>o.selected).length!==1)return null;
+    let previous=start-1;while(previous>=0&&!lines[previous].trim())previous--;
+    if(previous>=0&&/^\s*Field\s+1\s*\/\s*1\s*$/i.test(lines[previous]))start=previous;
+    return {start,end:footer,question:lines.slice(start,first).join('\n').trim(),options:options.map(o=>({...o,description:o.description.join('\n')})),footer:lines[footer].trim()};
+  }
   function parse(text,provider){
     let model='',reasoning='',lines=text.trimEnd().split('\n');
     if(provider!=='codex')return {text,model,reasoning,blocks:[]};
@@ -25,9 +46,12 @@
       }
       if(model)break;
     }
+    const menu=approval(lines);
     let kind='context',body=[],fenced=false,blocks=[];
     const flush=()=>{const text=body.join('\n').trim();if(text)blocks.push({kind,text});body=[];};
-    for(const line of lines){const marker=!fenced&&/^([›❯»•●])(?: |$)(.*)/.exec(line),status=!fenced&&/^[─━]+ (Worked for .+|Conversation recap.*)/.exec(line);
+    for(let index=0;index<lines.length;index++){const line=lines[index];
+      if(menu&&index===menu.start&&!fenced){flush();blocks.push({kind:'approval',text:lines.slice(menu.start,menu.end+1).join('\n'),question:menu.question,options:menu.options,footer:menu.footer});index=menu.end;kind='context';continue;}
+      const marker=!fenced&&/^([›❯»•●])(?: |$)(.*)/.exec(line),status=!fenced&&/^[─━]+ (Worked for .+|Conversation recap.*)/.exec(line);
       if(marker||status){flush();if(status){kind='status';body=[line.replace(/[─━]/g,'').trim()];}else{kind=/[›❯»]/.test(marker[1])?'prompt':/^(Ran |Explored\b|Viewed Image\b|Searched (for|the web)|Edited .+\(\+|Added .+\(\+|Deleted .+\(-|Interacted with background terminal\b)/.test(marker[2])?'tool':'reply';body=[marker[2]];}}
       else body.push(line);if(line.trimStart().startsWith('```'))fenced=!fenced;
     }flush();return {text:lines.join('\n').trimEnd(),model,reasoning,blocks};

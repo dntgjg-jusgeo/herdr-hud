@@ -172,7 +172,26 @@ inspects Herdr and explicitly reconciles it.
 
 Chat is a conservative formatting of recent captured Codex terminal output,
 not full structured conversation history. Other agents retain Terminal view.
-Native approvals/questions must still be answered in Herdr.
+On macOS hc, explicitly reported blocked permission/question screens have manual
+**Up**, **Down**, **Enter**, and **Cancel (Esc)** terminal controls above the
+composer. Review the exact current screen there before every click. These forward
+one named key each; Enter submits whatever the terminal has selected. hc waits
+for terminal output to become quiet, so delivery may be delayed. Identity and the
+complete current screen are checked before forwarding, but hc has no atomic
+question/screen condition: the screen can change during delivery. These are manual
+terminal controls, not buttons bound to a particular permission choice.
+
+A changed, incomplete, expired, or unsupported preview is refused and refreshed.
+A key has no automatic retry; uncertain delivery blocks further keys until you
+inspect that agent in Herdr and explicitly enable another key. Agent statuses
+without an explicit permission/question kind, legacy Herdr, and Windows remain
+read only for native questions. Regular prompt sending still requires idle.
+
+Codex's recognized Computer Use approval menu is formatted with the full question,
+aligned option labels, descriptions, and current terminal selection. Unrecognized
+menus retain their plain terminal text. Clearly listed ordinary next-step choices
+may appear as suggested replies: clicking one appends its text to your draft for
+review and editing; Send remains a separate action.
 
 ## Shepherdr mode (Mac)
 

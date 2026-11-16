@@ -1,0 +1,49 @@
+const {test}=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+class Node{constructor(){this.children=[];this.value='';this.style={};this.disabled=false;this.scrollTop=0;}append(...n){this.children.push(...n);}replaceChildren(...n){this.children=n;}setAttribute(){}focus(){this.focused=true;}querySelectorAll(){return [];}click(){if(!this.disabled)this.onclick?.();}}
+function harness(){
+ const nodes=new Map(),messages=[];
+ const document={getElementById(id){if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);},createElement:()=>new Node(),createTextNode:text=>({textContent:text}),addEventListener(){}};
+ const window={webkit:{messageHandlers:{hud:{postMessage:m=>messages.push(m)}}},HUDSuggestions:require('../Sources/HerdrHUD/Resources/suggestions.js')};
+ const context=vm.createContext({window,document,HUDModel:require('../Sources/HerdrHUD/Resources/model.js'),setInterval(){},console});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../Sources/HerdrHUD/Resources/app.js'),'utf8'),context);
+ const evalCode=s=>vm.runInContext(s,context);
+ evalCode("supportsTerminalControls=true;agents=[{id:'A',online:true,agent:'codex',agent_status:'blocked',input_kind:'permission',can_prompt:false}];selected='A';opened=true;outputs.set('A',{text:'approval',terminalControl:{token:'token',text:'Live <script>plain text</script>',uncertain:false}});renderHeader()");
+ return {messages,window,eval:evalCode,$:id=>document.getElementById(id)};
+}
+test('manual key shows exact text, sends one fixed key, locks and refreshes without repeating stale errors',()=>{
+ const h=harness();assert.equal(h.$('terminal-controls').hidden,false);assert.equal(h.$('terminal-screen').children[0].textContent,'Live <script>plain text</script>');assert.equal(h.$('send').disabled,true);
+ h.$('terminal-down').click();h.$('terminal-enter').click();let keys=h.messages.filter(m=>m.op==='terminalKey');assert.equal(keys.length,1);assert.equal(keys[0].key,'down');assert.equal(keys[0].token,'token');
+ h.window.receive({type:'terminalKey',data:{requestID:keys[0].requestID,id:'A',error:'Terminal question changed. Refresh and review.'}});
+ assert.equal(h.$('terminal-controls').hidden,true);assert.equal(h.messages.filter(m=>m.op==='terminalKey').length,1);assert.equal(h.messages.some(m=>m.op==='refresh'),true);assert.equal(h.messages.some(m=>m.op==='output'),true);
+});
+test('uncertain key disables subsequent controls until explicit reconciliation; responses remain agent bound',()=>{
+ const h=harness();h.$('terminal-enter').click();const sent=h.messages.find(m=>m.op==='terminalKey');
+ h.window.receive({type:'terminalKey',data:{requestID:sent.requestID,id:'A',error:'Key delivery uncertain'}});
+ h.window.receive({type:'output',data:{id:'A',text:'still blocked',terminalControl:{token:'next',text:'Current screen',uncertain:true}}});
+ assert.equal(h.$('terminal-enter').disabled,true);assert.equal(h.$('terminal-key-reconcile').hidden,false);h.$('terminal-enter').click();assert.equal(h.messages.filter(m=>m.op==='terminalKey').length,1);
+ h.$('terminal-key-reconcile').click();const reconcile=h.messages.find(m=>m.op==='reconcileTerminalKeys');assert.equal(reconcile.id,'A');
+ h.window.receive({type:'reconcileTerminalKeys',data:{id:'A',requestID:reconcile.requestID,ok:true}});assert.equal(h.$('terminal-controls').hidden,true);assert.equal(h.messages.filter(m=>m.op==='terminalKey').length,1);
+});
+test('unknown status kind, ordinary numbered output and unsupported hosts cannot offer controls',()=>{
+ const h=harness();for(const change of ["agents[0].input_kind=''","agents[0].input_kind='permission';agents[0].agent_status='idle'","agents[0].agent_status='blocked';supportsTerminalControls=false"]){h.eval(change+';renderHeader()');assert.equal(h.$('terminal-controls').hidden,true);h.eval("terminalKey('enter')");}
+ assert.equal(h.messages.some(m=>m.op==='terminalKey'),false);
+});
+test('suggested reply fills and retains existing draft, never sends',()=>{
+ const h=harness();h.eval("agents[0].agent_status='idle';agents[0].can_prompt=true;outputs.set('A',{text:'• Would you like me to add a search box?'});renderHeader()");
+ assert.equal(h.$('suggested-replies').hidden,false);h.$('prompt').value='Please keep current colors.';h.$('suggested-replies').children[0].click();
+ assert.match(h.$('prompt').value,/^Please keep current colors\.\n\n/);assert.match(h.$('prompt').value,/search box/);assert.equal(h.$('prompt').focused,true);assert.equal(h.messages.some(m=>m.op==='prompt'||m.op==='terminalKey'),false);
+});
+
+test('verified terminal preview occupies conversation once; ordinary views restore when unavailable',()=>{
+ const h=harness();assert.equal(h.$('output').hidden,true);assert.equal(h.$('previews').hidden,true);assert.equal(h.$('terminal-controls').hidden,false);
+ h.eval("agents[0].agent_status='idle';renderHeader()");assert.equal(h.$('terminal-controls').hidden,true);assert.equal(h.$('output').hidden,false);assert.equal(h.$('previews').hidden,true);
+ h.eval("previewMode=true;renderHeader()");assert.equal(h.$('output').hidden,true);assert.equal(h.$('previews').hidden,false);
+});
+
+test('prefixed live screen formats active approval and preserves exact full context without polling scroll jumps',()=>{
+ const h=harness(),raw='• Earlier transcript\n\nField 1/1\nAllow Computer Use to use "Demo"?\nApp: Demo\n› 1. Allow    Run the tool\n  2. Allow for this session    Until session ends\n  3. Always allow    Future requests\n  4. Cancel    Stop\nenter to submit | esc to cancel';
+ h.window.receive({type:'output',data:{id:'A',text:raw,terminalControl:{token:'new',text:raw,uncertain:false}}});
+ const screen=h.$('terminal-screen');assert.equal(screen.children[0].className,'block approval');assert.equal(screen.children[1].children[0].textContent,'Full terminal screen');assert.equal(screen.children[1].children[1].textContent,raw);
+ screen.scrollTop=85;const card=screen.children[0];h.eval('renderTerminalControls()');assert.equal(screen.children[0],card);assert.equal(screen.scrollTop,85);
+});

@@ -239,7 +239,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"terminalControlsSupported":self.client.usesHC]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
         case "close": closePanel()
         case "hide": if visible { toggleVisibility() }
         case "refresh": refresh()
@@ -290,6 +290,19 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 }
             }
         case "alert": if !panelOpen && visible { showToast(data) }
+        case "terminalKey", "reconcileTerminalKeys":
+            guard panelOpen, self.client.usesHC, let id = data["id"] as? String, id == selected, !requestID.isEmpty else { return }
+            guard !promptIDs.contains(requestID) else { return }; promptIDs.insert(requestID)
+            work.async {
+                var result: Row
+                do {
+                    if operation == "reconcileTerminalKeys" { try self.client.hc.reconcileTerminalKeys(id); result = ["id":id,"ok":true] }
+                    else { result = try self.client.hc.terminalKey(id,token:data["token"] as? String ?? "",key:data["key"] as? String ?? "") }
+                } catch { result = ["id":id,"error":error.localizedDescription] }
+                result["requestID"] = requestID
+                let value = result
+                DispatchQueue.main.async { self.emit(operation,value) }
+            }
         case "output", "prompt":
             guard let id = data["id"] as? String, !requestID.isEmpty, panelOpen else { return }
             if operation == "output" { if readBusy { return }; readBusy = true; selected = id }

@@ -10,6 +10,8 @@ final class HCTests: XCTestCase {
         var core = "fixture-core", terminals: [Row] = [], machines: [Row] = [], calls: [Invocation] = [], offline = false
         var sendResult: Row = ["turn":2,"started":NSNull(),"status":NSNull()]
         var sendError = false, malformed = false
+        var screenText = "Fixture reply", screenHow = "screen", screenComplete = true
+        var afterRead: (() -> Void)?
         var afterPut: (() -> Void)?
         var putResult: Row?
         lazy var client = HerdrClient(binary:"/fixture/hc",execute:run)
@@ -25,7 +27,10 @@ final class HCTests: XCTestCase {
                 case "machine.list":result = ["machines":machines]
                 case "terminal.list":result = ["terminals":terminals]
                 case "terminal.get":result = terminals.first { $0["address"] as? String == params["terminal"] as? String } ?? [:]
-                case "terminal.read":result = ["text":"Fixture reply", "complete":true, "how":"screen"]
+                case "terminal.read":result = ["text":screenText, "complete":screenComplete, "how":screenHow];afterRead?()
+                case "terminal.keys":
+                    if sendError { throw HUDError("unknown outcome") }
+                    result = sendResult
                 case "terminal.put":
                     let bytes=Data(base64Encoded:params["data"] as! String)!
                     result=putResult ?? ["path":"/fixture/image.png","bytes":bytes.count];afterPut?()

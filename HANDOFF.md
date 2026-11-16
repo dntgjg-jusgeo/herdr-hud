@@ -381,3 +381,29 @@ The composer never contains generated backend paths; terminal/chat history may.
 Installing/restarting the running app is separate from source/build verification.
 
 Installed macOS attachment acceptance: signature verified; Attach images opened the native file picker; selected PNG appeared as a thumbnail/name with no path inserted into the composer. It survived Chat/Previews switching, and removal disabled Send again. Test image was removed without sending. Physical external drag was covered by the UI drop callback tests rather than an end-to-end Finder drag; real-agent image consumption was not tested.
+
+## Manual terminal controls and question formatting — November 16, 2026
+
+macOS hc capability `terminalControlsSupported` enables one-key manual controls
+only for provider-reported blocked permission/question status. HC output carries
+`terminalControl` with an opaque consumable preview token and exact complete
+`terminal.read(lines:0, how:screen)` text. Before keys, HC rechecks bound identity,
+blocked kind and exact screen; it consumes the token before preflight, forwards
+one allowlisted up/down/enter/esc, validates acknowledgement, and latches uncertain
+delivery until explicit per-agent reconciliation. The native serial work queue
+and UI pending-request lock prevent concurrent manual clicks. No semantic approval
+selection or automatic retry exists. hc queues keys until output quiet and has no
+atomic screen predicate; UI explicitly discloses that the screen can change during
+delivery. Unknown/missing blocked kind offers no controls. Normal prompt guards
+are unchanged. Windows/legacy hosts don't advertise this capability.
+
+Known complete Codex Computer Use menu envelopes become display-only question
+cards with exact scope labels/descriptions; same-line descriptions and wrapped
+continuations remain visible. Other layouts stay ordinary terminal text.
+Suggested ordinary next steps append to the existing draft, never submit it.
+The existing silent toast appears only while the HUD panel is closed; an already
+open panel receives roster/output updates and attention state without a toast.
+
+Verification uses fake HC transports and a synthetic UI fixture only; never use
+a real user's approval as a test. Build/install and rendered acceptance are owned
+by the lead for this change.

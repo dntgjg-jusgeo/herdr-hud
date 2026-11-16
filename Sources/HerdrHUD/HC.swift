@@ -8,6 +8,9 @@ final class HCClient {
     var cache: [String: [Row]] = [:]
     var bindings: [String: Row] = [:]
     var lastMachines: [Row] = []
+    struct KeyPreview { let token: String; let text: String; let kind: String; let date: Date }
+    var keyPreviews: [String: KeyPreview] = [:]
+    var uncertainKeys: Set<String> = []
     init(binary: String, execute: @escaping (Invocation) throws -> String) {
         self.binary = binary; self.execute = execute
     }
@@ -79,7 +82,7 @@ final class HCClient {
         let tab = location?.dropFirst().joined(separator:" / ") ?? terminal["title"] as? String ?? address
         let title = terminal["name"] as? String ?? labels["name"] ?? (tab + " · " + (provider == "claude" ? "Claude" : "Codex"))
         var row: Row = ["pane_id":address,"terminal_id":address,"agent_session":identity,"agent":provider,
-                       "can_prompt":state == "idle", "can_attach":machineID == "local",
+                       "can_prompt":state == "idle", "can_attach":machineID == "local", "input_kind":status["kind"] as? String ?? "",
                        "agent_status":["idle","working","done","blocked","error"].contains(state) ? state : "unknown",
                        "workspace_id":labels["herdr.space"] ?? cwd,"workspace_label":workspace,
                        "tab_id":labels["herdr.tab"] ?? address,"tab_label":title.isEmpty ? address : title,"name":title,
@@ -122,7 +125,50 @@ final class HCClient {
         let row = try resolve(id)
         let reply = try rpc([("terminal.read",["terminal":row["terminal_id"]!,"lines":180])])[0]
         guard let text = reply["text"] as? String else { throw HUDError("hc returned unsupported terminal output.") }
-        return ["id":id,"provider":row["agent"]!,"text":text]
+        var output: Row = ["id":id,"provider":row["agent"]!,"text":text]
+        if Self.acceptsKeys(row) {
+            let screen = try liveScreen(row)
+            let current = try resolve(id)
+            if Self.acceptsKeys(current), current["input_kind"] as? String == row["input_kind"] as? String {
+                let previous = keyPreviews[id]
+                let preview = previous.flatMap { $0.text == screen && $0.kind == row["input_kind"] as? String && Date().timeIntervalSince($0.date) < 15 ? $0 : nil } ?? KeyPreview(token:UUID().uuidString,text:screen,kind:row["input_kind"] as! String,date:Date())
+                keyPreviews[id] = preview
+                output["terminalControl"] = ["token":preview.token,"text":screen,"uncertain":uncertainKeys.contains(id)]
+            }
+        }
+        return output
+    }
+    static func acceptsKeys(_ row: Row) -> Bool {
+        row["agent_status"] as? String == "blocked" && ["permission", "question"].contains(row["input_kind"] as? String ?? "")
+    }
+    func liveScreen(_ row: Row) throws -> String {
+        let reply = try rpc([("terminal.read",["terminal":row["terminal_id"]!,"lines":0])])[0]
+        guard reply["how"] as? String == "screen", reply["complete"] as? Bool == true, let text = reply["text"] as? String, !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw HUDError("Cannot read the current terminal screen.") }
+        return text
+    }
+    func terminalKey(_ id: String, token: String, key: String) throws -> Row {
+        guard ["up","down","enter","esc"].contains(key) else { throw HUDError("Unsupported terminal key.") }
+        guard !uncertainKeys.contains(id) else { throw HUDError("Key delivery uncertain. Check the terminal before enabling another key.") }
+        guard let preview = keyPreviews[id], preview.token == token, Date().timeIntervalSince(preview.date) < 15 else { throw HUDError("Terminal preview changed or expired. Refresh before using a control.") }
+        keyPreviews.removeValue(forKey:id) // Every click consumes its preview, even if a preflight fails.
+        let row = try resolve(id)
+        guard Self.acceptsKeys(row), row["input_kind"] as? String == preview.kind, try liveScreen(row) == preview.text else { throw HUDError("Terminal question changed. Refresh and review it before using a control.") }
+        let current = try resolve(id)
+        guard Self.acceptsKeys(current), current["input_kind"] as? String == preview.kind else { throw HUDError("Agent no longer needs this input. Refresh its output.") }
+        // hc queues keys after quiet; no atomic screen predicate exists. This is an
+        // explicit raw-key control, never a semantic approval or automatic retry.
+        do {
+            let result = try rpc([("terminal.keys",["terminal":current["terminal_id"]!,"keys":[key]])],mutation:true)[0]
+            guard let turn = result["turn"] as? NSNumber, CFGetTypeID(turn) != CFBooleanGetTypeID(), turn.doubleValue >= 0, turn.doubleValue.rounded(.down) == turn.doubleValue else { throw HUDError("Invalid key acknowledgement.") }
+            return ["id":id,"ok":true]
+        } catch {
+            uncertainKeys.insert(id)
+            throw HUDError("Key delivery uncertain or refused. Inspect this agent in Herdr before enabling another key.")
+        }
+    }
+    func reconcileTerminalKeys(_ id: String) throws {
+        _ = try resolve(id)
+        uncertainKeys.remove(id); keyPreviews.removeValue(forKey:id)
     }
     func prompt(_ id: String, _ text: String, attachments: [ImageAttachment] = []) throws -> Row {
         guard (!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || !attachments.isEmpty), text.utf8.count <= 60000, !text.contains("\0"), !text.hasPrefix("-") else { throw HUDError("Enter a prompt under 60 KB that does not start with a dash.") }
