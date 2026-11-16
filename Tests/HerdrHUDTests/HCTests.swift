@@ -10,6 +10,8 @@ final class HCTests: XCTestCase {
         var core = "fixture-core", terminals: [Row] = [], machines: [Row] = [], calls: [Invocation] = [], offline = false
         var sendResult: Row = ["turn":2,"started":NSNull(),"status":NSNull()]
         var sendError = false, malformed = false
+        var afterPut: (() -> Void)?
+        var putResult: Row?
         lazy var client = HerdrClient(binary:"/fixture/hc",execute:run)
         func run(_ invocation: Invocation) throws -> String {
             calls.append(invocation)
@@ -24,6 +26,9 @@ final class HCTests: XCTestCase {
                 case "terminal.list":result = ["terminals":terminals]
                 case "terminal.get":result = terminals.first { $0["address"] as? String == params["terminal"] as? String } ?? [:]
                 case "terminal.read":result = ["text":"Fixture reply", "complete":true, "how":"screen"]
+                case "terminal.put":
+                    let bytes=Data(base64Encoded:params["data"] as! String)!
+                    result=putResult ?? ["path":"/fixture/image.png","bytes":bytes.count];afterPut?()
                 case "terminal.send":
                     XCTAssertEqual(params["if"] as? String,"idle");XCTAssertEqual(params["force"] as? Bool,false)
                     XCTAssertEqual(params["wait"] as? Bool,false)

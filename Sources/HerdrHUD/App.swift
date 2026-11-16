@@ -2,6 +2,7 @@ import AppKit
 import WebKit
 import Carbon
 import ServiceManagement
+import UniformTypeIdentifiers
 
 final class OverlayPanel: NSPanel {
     init(contentRect: NSRect) {
@@ -55,7 +56,7 @@ final class BubbleView: NSView {
     override func mouseUp(with event: NSEvent) { if dragged { app?.savePosition() } else { app?.togglePanel() } }
     override func rightMouseDown(with event: NSEvent) { if let menu = app?.status.menu { NSMenu.popUpContextMenu(menu,with:event,for:self) } }
 }
-final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
+final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     let client = HerdrClient(), shepherdr = ShepherdrClient(), work = DispatchQueue(label:"herdr-hud.transport",qos:.userInitiated)
     let defaults = UserDefaults.standard
     let previews = PreviewGallery()
@@ -80,7 +81,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         config.userContentController.add(self,name:"hud")
         config.websiteDataStore = .nonPersistent()
         web = WKWebView(frame:panel.contentView!.bounds,configuration:config)
-        web.autoresizingMask = [.width,.height]; web.navigationDelegate = self
+        web.autoresizingMask = [.width,.height]; web.navigationDelegate = self; web.uiDelegate = self
         web.setValue(false,forKey:"drawsBackground")
         panel.contentView = web
         web.loadFileURL(HUDResources.root.appendingPathComponent("index.html"),allowingReadAccessTo:HUDResources.root)
@@ -233,7 +234,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
         case "close": closePanel()
         case "hide": if visible { toggleVisibility() }
         case "refresh": refresh()
@@ -290,7 +291,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             if operation == "prompt" { guard !promptIDs.contains(requestID) else { return }; promptIDs.insert(requestID) }
             work.async {
                 var result: Row
-                do { result = operation == "output" ? (id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)) : try self.client.prompt(id,data["message"] as? String ?? "") }
+                do { result = operation == "output" ? (id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)) : try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"]) }
                 catch { result = ["error":error.localizedDescription, "id":id] }
                 result["requestID"] = requestID
                 let value = result
@@ -320,6 +321,16 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             result["requestID"] = requestID
             let value = result
             DispatchQueue.main.async { self.emit("previews",value) }
+        }
+    }
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        guard frame.isMainFrame, panelOpen else { completionHandler(nil); return }
+        let picker = NSOpenPanel()
+        picker.title = "Attach images (up to 3, 4 MB each)"
+        picker.canChooseDirectories = false; picker.canChooseFiles = true; picker.allowsMultipleSelection = true
+        picker.allowedContentTypes = [.png,.jpeg,.gif,UTType(filenameExtension:"webp") ?? .image]
+        picker.beginSheetModal(for:panel) { response in
+            completionHandler(response == .OK ? picker.urls : nil)
         }
     }
     func webView(_ webView: WKWebView,decidePolicyFor navigationAction: WKNavigationAction,decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {

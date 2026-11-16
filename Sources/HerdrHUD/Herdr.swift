@@ -23,6 +23,7 @@ struct Invocation {
     var input: Data? = nil
     var localPrompt: Bool = false
     var responseIDs: Set<String> = []
+    var maximumInputBytes: Int = 524288
 }
 final class HerdrClient {
     let execute: (Invocation) throws -> String
@@ -120,8 +121,10 @@ final class HerdrClient {
         let (machine, row) = try resolve(id)
         return ["id":id, "provider":row["agent"] ?? "", "text":try call(machine, ["agent", "read", row["pane_id"] as! String, "--source", "recent-unwrapped", "--lines", "180"])]
     }
-    func prompt(_ id: String, _ message: String) throws -> Row {
-        if usesHC { return try hc.prompt(id, message) }
+    func prompt(_ id: String, _ message: String, attachments: Any? = nil) throws -> Row {
+        let images = try ImageAttachment.parse(attachments)
+        if usesHC { return try hc.prompt(id, message, attachments:images) }
+        guard images.isEmpty else { throw HUDError("Image attachments require a local hc agent.") }
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, message.utf8.count <= 60000, !message.contains("\0"), !message.hasPrefix("-") else { throw HUDError("Enter a prompt under 60 KB that does not start with a dash.") }
         let (machine, row) = try resolve(id)
         guard ["idle", "done"].contains(row["agent_status"] as? String ?? "") else { throw HUDError("This agent is busy or needs input. Answer native questions in Herdr.") }

@@ -13,10 +13,10 @@ final class HCClient {
     }
     func rpc(_ requests: [(String, Row)], mutation: Bool = false) throws -> [Row] {
         let ids = requests.map { _ in UUID().uuidString }
-        let wire = zip(ids, requests).map { id, request in
-            encode(["jsonrpc":"2.0", "id":id, "method":request.0, "params":request.1])
+        let wire = try zip(ids, requests).map { id, request in
+            String(decoding:try JSONSerialization.data(withJSONObject:["jsonrpc":"2.0", "id":id, "method":request.0, "params":request.1],options:[.sortedKeys,.withoutEscapingSlashes]),as:UTF8.self)
         }.joined(separator:"\n") + "\n"
-        let raw = try execute(Invocation(executable:binary, arguments:["connect", "--session", "default"], mutation:mutation, input:Data(wire.utf8), responseIDs:Set(ids)))
+        let raw = try execute(Invocation(executable:binary, arguments:["connect", "--session", "default"], mutation:mutation, input:Data(wire.utf8), responseIDs:Set(ids), maximumInputBytes:requests.count == 1 && requests[0].0 == "terminal.put" ? 6 * 1024 * 1024 : 524288))
         var replies: [String: Row] = [:]
         for line in raw.split(separator:"\n") {
             guard let reply = try? JSONSerialization.jsonObject(with:Data(line.utf8)) as? Row,
@@ -79,7 +79,7 @@ final class HCClient {
         let tab = location?.dropFirst().joined(separator:" / ") ?? terminal["title"] as? String ?? address
         let title = terminal["name"] as? String ?? labels["name"] ?? (tab + " · " + (provider == "claude" ? "Claude" : "Codex"))
         var row: Row = ["pane_id":address,"terminal_id":address,"agent_session":identity,"agent":provider,
-                       "can_prompt":state == "idle",
+                       "can_prompt":state == "idle", "can_attach":machineID == "local",
                        "agent_status":["idle","working","done","blocked","error"].contains(state) ? state : "unknown",
                        "workspace_id":labels["herdr.space"] ?? cwd,"workspace_label":workspace,
                        "tab_id":labels["herdr.tab"] ?? address,"tab_label":title.isEmpty ? address : title,"name":title,
@@ -124,18 +124,35 @@ final class HCClient {
         guard let text = reply["text"] as? String else { throw HUDError("hc returned unsupported terminal output.") }
         return ["id":id,"provider":row["agent"]!,"text":text]
     }
-    func prompt(_ id: String, _ text: String) throws -> Row {
-        guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, text.utf8.count <= 60000, !text.contains("\0"), !text.hasPrefix("-") else { throw HUDError("Enter a prompt under 60 KB that does not start with a dash.") }
+    func prompt(_ id: String, _ text: String, attachments: [ImageAttachment] = []) throws -> Row {
+        guard (!text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || !attachments.isEmpty), text.utf8.count <= 60000, !text.contains("\0"), !text.hasPrefix("-") else { throw HUDError("Enter a prompt under 60 KB that does not start with a dash.") }
         let row = try resolve(id)
         // hc's atomic status condition only supports idle/working; done is displayed but
         // is deliberately read-only until the program reports idle.
         guard row["agent_status"] as? String == "idle" else { throw HUDError("This agent is busy or needs input. Answer native questions in Herdr.") }
+        guard attachments.count <= ImageAttachment.maximumCount, attachments.isEmpty || row["machine_id"] as? String == "local" else { throw HUDError("Image attachments require a local hc agent.") }
+        var message = text
         do {
-            let result = try rpc([("terminal.send",["terminal":row["terminal_id"]!,"text":text,"if":"idle","force":false,"wait":false])],mutation:true)[0]
+            var paths: [String] = []
+            for image in attachments {
+                let current = try resolve(id)
+                guard current["agent_status"] as? String == "idle" else { throw HUDError("Agent is no longer idle.") }
+                let uploaded = try rpc([("terminal.put",["terminal":current["terminal_id"]!,"name":image.name,"data":image.data.base64EncodedString()])],mutation:true)[0]
+                guard let path = uploaded["path"] as? String, path.hasPrefix("/"), !path.contains("\0"), path.utf8.count <= 4096,
+                      let count = uploaded["bytes"] as? NSNumber, CFGetTypeID(count) != CFBooleanGetTypeID(), count.intValue == image.data.count else { throw HUDError("Invalid image upload acknowledgement.") }
+                paths.append(path)
+            }
+            if !paths.isEmpty {
+                message += "\n\n[HUD attached images]\nInspect these local image files using your image viewing/read tool before answering. Each line is a JSON-quoted file path:\n" + paths.map { encode($0) }.joined(separator:"\n") + "\n[/HUD attached images]"
+                let current = try resolve(id)
+                guard current["agent_status"] as? String == "idle" else { throw HUDError("Agent is no longer idle.") }
+            }
+            guard message.utf8.count <= 60000 else { throw HUDError("Prompt and image references exceed 60 KB.") }
+            let result = try rpc([("terminal.send",["terminal":row["terminal_id"]!,"text":message,"if":"idle","force":false,"wait":false])],mutation:true)[0]
             guard let turn = result["turn"] as? NSNumber, CFGetTypeID(turn) != CFBooleanGetTypeID(), turn.doubleValue >= 0, turn.doubleValue.rounded(.down) == turn.doubleValue else { throw HUDError("Invalid hc acknowledgement.") }
             return ["ok":true,"id":id]
         } catch {
-            throw HUDError("Delivery uncertain or refused. Inspect Herdr before sending again.")
+            throw HUDError(attachments.isEmpty ? "Delivery uncertain or refused. Inspect Herdr before sending again." : "Image upload or delivery uncertain. Inspect Herdr before sending again; draft and images retained.")
         }
     }
 }

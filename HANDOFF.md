@@ -360,3 +360,24 @@ YOU card. Submitted messages and fenced examples remain visible. Native prompt
 and hc identity/readiness/uncertain-delivery logic is unchanged.
 
 Local macOS acceptance: installed bundle signature verified; Previews rendered 24 recent images after choosing the project outputs folder, and clicking a thumbnail opened its matching read-only copy in Preview. Draft text survived switching to Previews; test text was cleared without sending. Chat no longer shows the idle Codex placeholder card. Initial automatic folder discovery stayed loading for this session; the saved native folder selection worked.
+
+## macOS image attachment implementation — November 16, 2026
+
+The composer stages FileReader raster bytes as removable thumbnail chips, with an
+accessible Attach images picker. Browser and native ImageIO limits independently
+check 3 files/4 MB each and 40 million pixels; all browser drafts total 24 MB.
+Staged drafts remain bound to the exact agent identity; Shepherdr automatic follow
+pauses while that identity has images or reads in flight. No upload happens until
+Send. Local hc Claude/Codex only: each terminal.put and final single terminal.send
+is preceded by fresh identity/idle resolution. hc still applies if=idle on send.
+The put-only process stdin allowance is 6 MB; other operations retain 512 KB.
+Payloads stay on stdin. Unknown upload/send outcomes retain drafts and block
+retry pending the existing reconciliation action. No live agent sends are tests.
+
+Delivery is explicit local-file references plus an instruction to invoke an image
+view/read tool, not native CLI multimodal injection. A send acknowledgement proves
+text acceptance, not that an agent viewed the image. hc owns uploaded-file lifetime.
+The composer never contains generated backend paths; terminal/chat history may.
+Installing/restarting the running app is separate from source/build verification.
+
+Installed macOS attachment acceptance: signature verified; Attach images opened the native file picker; selected PNG appeared as a thumbnail/name with no path inserted into the composer. It survived Chat/Previews switching, and removal disabled Send again. Test image was removed without sending. Physical external drag was covered by the UI drop callback tests rather than an end-to-end Finder drag; real-agent image consumption was not tested.

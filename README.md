@@ -324,3 +324,23 @@ On macOS, **Previews** beside Chat/Terminal shows up to 24 recent local images
 from the agent's folder and `outputs`. Use **Choose folder…** if its project
 folder differs. Click a thumbnail to open a read-only copy in Preview; edits to
 that copy do not change the original. Remote image previews are not supported.
+
+### Attach local images on macOS
+
+For a local hc Claude or Codex agent, drop PNG, JPEG, WebP or GIF files on the
+HUD or choose **Attach images**. The composer shows removable thumbnails and
+filenames; switching tabs or agents preserves each image draft in memory. Up to
+three images (4 MB each, 40 million pixels each) can accompany a prompt, including
+an image-only prompt. All open image drafts together are limited to 24 MB. Closing
+the app discards these drafts. Replaced agents do not inherit image drafts.
+
+Nothing uploads on drop. **Send prompt** writes the validated image bytes beside
+the selected terminal with hc `terminal.put`, then submits one text prompt asking
+the agent to inspect those files using its image/read tool. This is local file
+access, not native CLI multimodal injection; the agent's tools and permissions
+determine whether it can view them. The backend transcript can show these file
+references; the composer never inserts paths. Upload/send failure retains the
+draft and images and requires inspection in Herdr before another attempt. Uploaded
+files live until hc removes the terminal, including files from interrupted sends.
+Remote, legacy Herdr, and Windows attachments are unavailable. Text prompting and
+dictation continue to work normally.

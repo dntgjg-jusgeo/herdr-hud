@@ -11,7 +11,7 @@ final class ProcessRunner {
             guard let path = status.components(separatedBy:"\n").first(where:{$0.hasPrefix("socket: ")}).map({String($0.dropFirst(8))}), let input = invocation.input else { throw HUDError("Cannot locate Herdr socket.") }
             return try LocalPrompt.send(path:path,input:input,timeout:timeout)
         }
-        guard (invocation.input?.count ?? 0) <= 524288 else { throw HUDError("Input limit exceeded.") }
+        guard (invocation.input?.count ?? 0) <= min(invocation.maximumInputBytes, 6 * 1024 * 1024) else { throw HUDError("Input limit exceeded.") }
         let input = Pipe(), output = Pipe(), error = Pipe()
         let handles = [input.fileHandleForReading,input.fileHandleForWriting,output.fileHandleForReading,output.fileHandleForWriting,error.fileHandleForReading,error.fileHandleForWriting]
         defer { for h in handles { try? h.close() } }

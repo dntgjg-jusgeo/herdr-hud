@@ -3,6 +3,7 @@ const $=id=>document.getElementById(id);
 const post=data=>window.webkit?.messageHandlers?.hud ? window.webkit.messageHandlers.hud.postMessage(data) : window.chrome.webview.postMessage(data);
 if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event=>window.receive(event.data));
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
+let supportsAttachments=false,attachments=new Map(),attachmentLoads=new Map(),attachmentSequence=0,pendingAttachmentBytes=0;
 let supportsPreviews=false,previewMode=false,previewRequestID='';
 let rosterMode='herdr',shepherdr=null,supportsShepherdr=false,selectedRow='';
 let baseline=false,unread=new Set(),drafts=new Map(),outputs=new Map(),since=new Map(),uncertain=new Set(),promptByRequest=new Map();
@@ -16,7 +17,7 @@ function el(tag,text,cls){const node=document.createElement(tag);if(text!==undef
 function notice(text){$('notice').hidden=!text;$('notice').textContent=text;}
 function badge(){const list=rows();post({op:'badge',count:list?list.filter(r=>r.need||unread.has(r.agent_id)).length:agents.filter(a=>a.agent_status==='blocked'||unread.has(a.id)).length});}
 // A Shepherdr row keeps its selection when its agent starts, finishes or is replaced; the draft and any uncertain-send block move with it.
-function follow(){if(!selectedRow)selectedRow=linked(selected)?.key||'';const r=selectedRow&&rows()?.find(r=>r.key===selectedRow);if(!r?.view_id||r.view_id===selected)return;if(uncertain.has(selected))uncertain.add(r.view_id);drafts.set(r.view_id,$('prompt').value);select(r.view_id);}
+function follow(){if(!selectedRow)selectedRow=linked(selected)?.key||'';const r=selectedRow&&rows()?.find(r=>r.key===selectedRow);if(!r?.view_id||r.view_id===selected)return;if(imagesFor(selected).length||attachmentLoads.get(selected)){notice('This agent changed. Images remain with this draft; remove them or select the new agent manually.');return;}if(uncertain.has(selected))uncertain.add(r.view_id);drafts.set(r.view_id,$('prompt').value);select(r.view_id);}
 function renderModes(){$('modes').hidden=!supportsShepherdr;$('mode-herdr').setAttribute('aria-pressed',String(rosterMode==='herdr'));$('mode-shepherdr').setAttribute('aria-pressed',String(rosterMode==='shepherdr'));$('roster-label').textContent=rosterMode==='shepherdr'&&supportsShepherdr?'SPACES & TASKS':'AGENTS';$('search').placeholder=rosterMode==='shepherdr'&&supportsShepherdr?'Find a space or task…':'Find an agent…';}
 function renderShepherdr(list,roster,scroll){
   const shown=list.filter(r=>`${r.title} ${r.detail} ${r.state} ${r.machine}`.toLowerCase().includes(filter));$('count').textContent=list.filter(r=>r.kind==='task').length;
@@ -43,10 +44,11 @@ function renderHeader(){
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
   const state=a?.agent_status||'';const busy=state==='working';$('working').hidden=!busy;
   if(busy&&!since.has(a.id))since.set(a.id,Date.now());
-  $('send').disabled=!a?.online||a.can_prompt===false||!['idle','done'].includes(state)||sending||uncertain.has(selected)||!$('prompt').value.trim();
+  $('send').disabled=!a?.online||a.can_prompt===false||!['idle','done'].includes(state)||sending||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
   $('prompt').disabled=!a;$('chat').disabled=a?.agent!=='codex';
   $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?'Agent is working. You can draft the next prompt here.':a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
   $('reconcile').hidden=!uncertain.has(selected);
+  $('attach').hidden=!supportsAttachments;$('attach').disabled=!canAttach(a)||sending||uncertain.has(selected);renderAttachments();
 }
 function inline(text,parent){ // No terminal text is ever interpreted as HTML.
   for(const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)){if(part.startsWith('**')&&part.endsWith('**'))parent.append(el('strong',part.slice(2,-2)));else if(part.startsWith('`')&&part.endsWith('`'))parent.append(el('code',part.slice(1,-1)));else parent.append(document.createTextNode(part));}
@@ -81,8 +83,47 @@ function renderPreviews(data){
     button.onclick=()=>request('openPreview',{id:selected,token:item.token});return button;
   }));
 }
+function imagesFor(id){return attachments.get(id)||[];}
+function canAttach(a=active()){return supportsAttachments&&a?.can_attach===true&&a.online&&['claude','codex'].includes(a.agent);}
+function renderAttachments(){
+  const items=imagesFor(selected);$('attachments').hidden=!items.length;
+  if(!items.length){$('attachments').replaceChildren?.();return;}
+  $('attachments').replaceChildren(...items.map(item=>{
+    const chip=el('div',undefined,'attachment'),image=el('img');image.src=item.url;image.alt=item.name;
+    const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||uncertain.has(selected);
+    remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));renderHeader();};
+    chip.append(image,el('span',item.name),remove);return chip;
+  }));
+}
+async function stageImages(files){
+  if(!canAttach()||sending||uncertain.has(selected)){notice('Images are available for local hc Claude and Codex agents.');return;}
+  const id=selected,list=Array.from(files),count=imagesFor(id).length+(attachmentLoads.get(id)||0);
+  const stagedBytes=[...attachments.values()].flat().reduce((n,item)=>n+item.bytes,0)+pendingAttachmentBytes;
+  if(!list.length)return;
+  if(stagedBytes+list.reduce((n,f)=>n+f.size,0)>24*1024*1024){notice('Attached drafts total 24 MB. Remove an image from another draft first.');return;}
+  if(count+list.length>3||list.some(f=>!['image/png','image/jpeg','image/webp','image/gif'].includes(f.type)||!f.size||f.size>4*1024*1024)){notice('Attach up to 3 PNG, JPEG, WebP or GIF images, 4 MB each.');return;}
+  pendingAttachmentBytes+=list.reduce((n,f)=>n+f.size,0);attachmentLoads.set(id,(attachmentLoads.get(id)||0)+list.length);renderHeader();
+  for(const file of list){
+    try{
+      const url=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Could not read image.'));reader.readAsDataURL(file);});
+      if(typeof url!=='string'||url.length>5600000||!/^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(url))throw new Error('Could not read image.');
+      const valid=await new Promise(resolve=>{const image=new Image();image.onload=()=>resolve(image.naturalWidth>0&&image.naturalWidth<=16384&&image.naturalHeight>0&&image.naturalHeight<=16384&&image.naturalWidth*image.naturalHeight<=40000000);image.onerror=()=>resolve(false);image.src=url;});
+      if(!valid)throw new Error('Use a valid raster image under 40 million pixels.');
+      attachments.set(id,[...imagesFor(id),{key:++attachmentSequence,bytes:file.size,name:file.name.split(/[\\/]/).pop().slice(0,120)||'Image',url,data:url.slice(url.indexOf(',')+1)}]);
+    }catch(error){notice(error.message||'Could not read image.');}
+    finally{pendingAttachmentBytes-=file.size;attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}
+  }
+}
+$('attach').onclick=()=>$('attachment-files').click();
+$('attachment-files').onchange=e=>{stageImages(e.target.files);e.target.value='';};
+// Prevent WebKit's default path insertion/navigation for every file drop, including unsupported agents.
+for(const kind of ['dragover','drop'])document.addEventListener(kind,e=>{
+  if(!Array.from(e.dataTransfer?.types||[]).includes('Files'))return;
+  e.preventDefault();
+  if(kind==='drop'){stageImages(e.dataTransfer.files);}
+});
 function read(){if(!opened||reading||!active()?.online)return;reading=true;request('output',{id:selected});}
-function send(){if($('send').disabled)return;const id=selected,message=$('prompt').value;sending=true;notice('');const requestID=request('prompt',{id,message});promptByRequest.set(requestID,{id,message});renderHeader();}
+function send(){if($('send').disabled)return;const id=selected,message=$('prompt').value;sending=true;notice('');const images=imagesFor(id).slice();const requestID=request('prompt',{id,message,attachments:images.map(x=>({data:x.data}))});promptByRequest.set(requestID,{id,message,images});renderHeader();}
 window.receive=({type,data})=>{
   if(type==='roster'){
     const before=agents;agents=data.agents||[];shepherdr=data.shepherdr||(rosterMode==='shepherdr'?shepherdr:null);
@@ -105,10 +146,10 @@ window.receive=({type,data})=>{
   }else if(type==='prompt'){
     const pending=promptByRequest.get(data.requestID);if(!pending)return;promptByRequest.delete(data.requestID);sending=false;
     if(data.error){notice(data.error);if(/uncertain/i.test(data.error))uncertain.add(pending.id);}
-    else{if(selected===pending.id&&$('prompt').value===pending.message)$('prompt').value='';if(drafts.get(pending.id)===pending.message)drafts.delete(pending.id);notice('Prompt sent.');request('refresh');}renderHeader();
+    else{if(selected===pending.id&&$('prompt').value===pending.message)$('prompt').value='';if(drafts.get(pending.id)===pending.message)drafts.delete(pending.id);const sent=new Set(pending.images.map(x=>x.key));attachments.set(pending.id,imagesFor(pending.id).filter(x=>!sent.has(x.key)));notice('Prompt sent.');request('refresh');}renderHeader();
   }else if(type==='previewFolderChanged'){if(data.id===selected&&previewMode)loadPreviews();
   }else if(type==='previews'){renderPreviews(data);
-  }else if(type==='preferences'){if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsPreviews=!!data.previewsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  }else if(type==='preferences'){if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
   else if(type==='notice'){notice(data.message);}
 };
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();request('close');}});
