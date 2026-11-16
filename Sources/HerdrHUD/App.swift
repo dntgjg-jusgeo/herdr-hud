@@ -99,7 +99,12 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         NotificationCenter.default.addObserver(self,selector:#selector(screensChanged),name:NSApplication.didChangeScreenParametersNotification,object:nil)
         NSEvent.addLocalMonitorForEvents(matching:.keyDown) { [weak self] event in
             guard let self = self else { return event }
-            if event.keyCode == 53 && self.panelOpen { self.closePanel(); return nil }
+            if event.keyCode == 53 && self.panelOpen {
+                self.web.evaluateJavaScript("window.handleEscape()") { [weak self] _, error in
+                    if error != nil { self?.closePanel() }
+                }
+                return nil
+            }
             return event
         }
         if visible { bubble.orderFrontRegardless() }

@@ -5,6 +5,7 @@ if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
 let supportsAttachments=false,attachments=new Map(),attachmentLoads=new Map(),attachmentSequence=0,pendingAttachmentBytes=0;
 let supportsPreviews=false,previewMode=false,previewRequestID='';
+let attachmentPreview=null,attachmentButtons=new Map();
 let rosterMode='herdr',shepherdr=null,supportsShepherdr=false,selectedRow='';
 let baseline=false,unread=new Set(),drafts=new Map(),outputs=new Map(),since=new Map(),uncertain=new Set(),promptByRequest=new Map();
 function request(op,extra={}){const requestID=`${Date.now()}-${++requestSequence}`;post({op,requestID,...extra});return requestID;}
@@ -36,6 +37,7 @@ function renderRoster(){
   if(!items.length)roster.append(el('p',agents.length?'No matching agents.':'No agents found. Start an agent in Herdr.','empty'));roster.scrollTop=scroll;
 }
 function select(id){
+  if(id!==selected)closeAttachmentPreview(false);
   drafts.set(selected,$('prompt').value);selectedRow=linked(id)?.key||'';selected=id;request('preferences',{selectedAgent:id});selectionEpoch++;lastRendered='';$('prompt').value=drafts.get(id)||'';
   lastOutput=outputs.get(id)?.text||'';if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();
 }
@@ -85,14 +87,29 @@ function renderPreviews(data){
 }
 function imagesFor(id){return attachments.get(id)||[];}
 function canAttach(a=active()){return supportsAttachments&&a?.can_attach===true&&a.online&&['claude','codex'].includes(a.agent);}
+function closeAttachmentPreview(restore=true){
+  if(!attachmentPreview)return;
+  const key=attachmentPreview.key;attachmentPreview=null;$('attachment-preview').close();
+  if(restore)(attachmentButtons.get(key)||$('attach')).focus();
+}
+function openAttachmentPreview(item){
+  attachmentPreview={key:item.key,id:selected};$('attachment-preview-name').textContent=item.name;
+  $('attachment-preview-image').src=item.url;$('attachment-preview-image').alt=item.name;
+  $('attachment-preview').showModal();$('attachment-preview-close').focus();
+}
+$('attachment-preview-close').onclick=()=>closeAttachmentPreview();
+$('attachment-preview').oncancel=event=>{event.preventDefault();closeAttachmentPreview();};
 function renderAttachments(){
+  attachmentButtons=new Map();
+  if(attachmentPreview&&(attachmentPreview.id!==selected||!imagesFor(selected).some(x=>x.key===attachmentPreview.key)))closeAttachmentPreview(false);
   const items=imagesFor(selected);$('attachments').hidden=!items.length;
   if(!items.length){$('attachments').replaceChildren?.();return;}
   $('attachments').replaceChildren(...items.map(item=>{
-    const chip=el('div',undefined,'attachment'),image=el('img');image.src=item.url;image.alt=item.name;
+    const chip=el('div',undefined,'attachment'),image=el('img'),preview=el('button',undefined,'attachment-thumbnail');image.src=item.url;image.alt='';
+    preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);preview.append(image);preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
     const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||uncertain.has(selected);
     remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));renderHeader();};
-    chip.append(image,el('span',item.name),remove);return chip;
+    chip.append(preview,el('span',item.name),remove);return chip;
   }));
 }
 async function stageImages(files){
@@ -164,7 +181,8 @@ window.receive=({type,data})=>{
   }else if(type==='preferences'){if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
   else if(type==='notice'){notice(data.message);}
 };
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();request('close');}});
+window.handleEscape=()=>{if(attachmentPreview)closeAttachmentPreview();else request('close');};
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();window.handleEscape();}});
 $('refresh').onclick=()=>request('refresh');$('close').onclick=()=>request('close');$('hide').onclick=()=>request('hide');$('send').onclick=send;
 $('reconcile').onclick=()=>{uncertain.delete(selected);notice('');renderHeader();};
 $('search').oninput=()=>{filter=$('search').value.toLowerCase();renderRoster();};
