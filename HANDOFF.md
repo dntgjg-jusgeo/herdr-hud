@@ -407,3 +407,77 @@ open panel receives roster/output updates and attention state without a toast.
 Verification uses fake HC transports and a synthetic UI fixture only; never use
 a real user's approval as a test. Build/install and rendered acceptance are owned
 by the lead for this change.
+
+## Six-feature workflow work — November 16, 2026
+
+The macOS host advertises draftsSupported and quickPromptsSupported. DraftStore
+writes a bounded private atomic snapshot (text, validated raster data, session
+identity and uncertain delivery markers), refusing symlink/corrupt storage.
+The JS controller waits for native disk acknowledgement before a send/key action
+and saves pending actions as uncertain across crashes. Normal app quit awaits
+flush. Draft recovery copies explicitly and leaves the saved original intact.
+Quick prompts persist in UserDefaults and only fill the composer.
+
+Unread status transitions and queued output preserve the current reading position.
+Files are discovered natively from bound local output and represented by opaque
+agent-scoped tokens; opening revalidates local regular non-symlink files and uses
+explicit Preview/TextEdit or Quick Look handlers.
+
+The optional guarded-key path requires hello feature guarded_keys_v1 plus a valid
+terminal.input_snapshot from the exact core/terminal identity. Only recognized
+single-field numbered menus expose literal Send N buttons. A click consumes its
+token and calls terminal.keys_checked once; rejected results never fall back to
+terminal.keys, and uncertain outcomes latch until explicit reconciliation (with
+an additional two-second hold). No default-keymap or semantic-approval claim is
+made: custom keybindings are unknowable from an already-running terminal.
+
+The companion sibling herdr-core work is separate and not yet activated for user
+sessions. Old holders persist across core restart and cannot provide guarded
+writes. True semantic approval buttons require an agent approval API rather than
+terminal key synthesis. Never use a user's real approval as a test.
+
+Installed macOS acceptance for the first five additions: release build and ad-hoc
+signature verified; bundled resources match source. Native menu quit/relaunch
+restored both unsent shortcut text and an image thumbnail. Reply file button
+opened the expected PNG in Preview. Test draft/image were cleared without sending,
+and the persisted snapshot is empty. Custom shortcut save/fill/reload also passed
+in an isolated browser fixture. JS52 passed; Swift58 executed/1skipped/0failures.
+No live agent/core/holder restarted; guarded core remains source-only.
+
+## Native Codex tool approvals — November 16, 2026
+
+This supersedes the earlier semantic-approval limitation for newly launched,
+explicitly linked Codex sessions; existing embedded sessions remain unchanged.
+CodexSessionLauncher starts a dedicated stock app-server, confirms no loaded
+threads, opens a stock TUI with --remote, then binds its sole loaded UUID to exact
+core/terminal incarnation/foreground identity and the private socket instance.
+It never starts a turn or cold-resumes an existing user's chat. The new terminal
+is made visible via herdr-app terminal.keep so startup trust/login can be answered.
+
+Codex's Unix endpoint is a symlink to a hashed physical socket. The launcher
+verifies its official deterministic target, private ownership and both identities.
+CodexSocket implements bounded WebSocket-over-UDS (the CLI proxy is a raw tunnel,
+not a JSONL converter). It verifies handshake, same-account peer, masking,
+fragment/control rules and UTF-8. No local TCP listener or secret copying.
+
+CodexApprovals joins only its sole mapped loaded thread. An empty new chat has
+no rollout: wait2s, recheck loaded identity, and retry read-only attachment after
+the first user prompt. Each RPC has a deadline; approval responses never retry.
+A known history-projection error fails closed with explicit Reconnect guidance.
+Only exact message-only mcp_tool_call forms are supported; scopes must be offered.
+Resolved IDs are tombstoned, lifecycle/connection changes invalidate cards, and
+the native host rechecks descriptor fingerprint and callback epoch before action.
+The UI labels the original linked UUID and never remaps by cwd or session title.
+
+Actual installed Codex runtime verified in isolated, credential-free temporary
+configuration: two-client attach succeeds after first-turn projection, and stock
+remote TUI creates one new loaded chat without a prompt. The transport test's
+synthetic turn used only a disabled loopback provider; no external model call.
+These tests did not grant a real permission or touch user sessions.
+
+Installed acceptance: JS54passed, Swift75executed/1skip/0fail, release and signature
+passed. Installed native New Codex dialog + project picker/cancel verified; no
+user session launched. Native/bundled resources match current build, and the
+persisted draft snapshot is unchanged. Exact semantic response/resolution was
+tested through a synthetic WebSocket and rendered UI, not a real user permission.
+Full evidence is outputs/herdr-hud-native-approvals.md in the parent chat directory.

@@ -8,6 +8,10 @@ final class HCClient {
     var cache: [String: [Row]] = [:]
     var bindings: [String: Row] = [:]
     var lastMachines: [Row] = []
+    var guardedFeature = false
+    var guardedUncertainUntil: [String:Date] = [:]
+    struct ChoicePreview { let token: String; let text: String; let date: Date; let choices: [Row] }
+    var choicePreviews: [String:ChoicePreview] = [:]
     struct KeyPreview { let token: String; let text: String; let kind: String; let date: Date }
     var keyPreviews: [String: KeyPreview] = [:]
     var uncertainKeys: Set<String> = []
@@ -40,18 +44,22 @@ final class HCClient {
         guard let generation = replies[0]["generation"] as? NSNumber, CFGetTypeID(generation) != CFBooleanGetTypeID(), generation.intValue == 1, replies[0]["framed"] as? Bool == false,
               let core = replies[0]["core"] as? Row, let id = core["id"] as? String, !id.isEmpty,
               let machines = replies[2]["machines"] as? [Row] else { throw HUDError("Cannot identify the hc core or its machines.") }
+        guardedFeature = (replies[0]["features"] as? [String] ?? []).contains("guarded_keys_v1")
         return (id,replies[1],machines)
     }
     static func provider(_ terminal: Row) -> String? {
         guard let foreground = terminal["foreground"] as? Row, let args = foreground["argv"] as? [String] else { return nil }
         // A provider token in a task argument is not executable identity.
         let executable = args.first.map { URL(fileURLWithPath:$0).lastPathComponent.lowercased() } ?? ""
-        var entry = executable
+        var entry = executable, entryIndex = 0
         if ["node", "nodejs"].contains(executable), args.count > 1, !args[1].hasPrefix("-") {
-            entry = URL(fileURLWithPath:args[1]).lastPathComponent.lowercased()
+            entry = URL(fileURLWithPath:args[1]).lastPathComponent.lowercased();entryIndex = 1
         }
         for provider in ["claude", "codex"] {
-            if entry == provider || entry == provider + ".js" { return provider }
+            if entry == provider || entry == provider + ".js" {
+                if provider == "codex", args.count > entryIndex+1, ["app-server","remote-control","exec-server"].contains(args[entryIndex+1]) { return nil }
+                return provider
+            }
         }
         return nil
     }
@@ -134,6 +142,16 @@ final class HCClient {
                 let preview = previous.flatMap { $0.text == screen && $0.kind == row["input_kind"] as? String && Date().timeIntervalSince($0.date) < 15 ? $0 : nil } ?? KeyPreview(token:UUID().uuidString,text:screen,kind:row["input_kind"] as! String,date:Date())
                 keyPreviews[id] = preview
                 output["terminalControl"] = ["token":preview.token,"text":screen,"uncertain":uncertainKeys.contains(id)]
+                if guardedFeature, current["agent"] as? String == "codex",current["machine_id"] as? String == "local",
+                   let snapshot=try? rpc([("terminal.input_snapshot",["terminal":current["terminal_id"]!])])[0], snapshot["complete"] as? Bool == true,
+                   let token=snapshot["token"] as? String, let live=snapshot["text"] as? String,live==screen,
+                   let terminal=snapshot["terminal"] as? Row,let core=snapshot["core_id"] as? String,
+                   let exact=try Self.row(terminal,core:core,machines:[]),exact["id"] as? String==id,
+                   let choices=ApprovalMenu.choices(live) {
+                    choicePreviews[id]=ChoicePreview(token:token,text:live,date:Date(),choices:choices)
+                    output["terminalControl"]=["token":preview.token,"text":live,"uncertain":uncertainKeys.contains(id),"choiceToken":token,"choices":choices]
+                } else { choicePreviews.removeValue(forKey:id) }
+
             }
         }
         return output
@@ -166,8 +184,24 @@ final class HCClient {
             throw HUDError("Key delivery uncertain or refused. Inspect this agent in Herdr before enabling another key.")
         }
     }
+    func approvalChoice(_ id: String, token: String, key: String) throws -> Row {
+        guard guardedFeature,!uncertainKeys.contains(id),let preview=choicePreviews[id],preview.token==token,Date().timeIntervalSince(preview.date)<15,
+              preview.choices.contains(where: { $0["key"] as? String == key }) else { throw HUDError("Approval changed or expired. Refresh and review the question.") }
+        choicePreviews.removeValue(forKey:id);keyPreviews.removeValue(forKey:id)
+        let row=try resolve(id)
+        guard Self.acceptsKeys(row),row["machine_id"] as? String=="local" else { throw HUDError("Approval is no longer available.") }
+        // Only the guarded endpoint is allowed here: never fall back to raw keys.
+        do {
+            let result=try rpc([("terminal.keys_checked",["terminal":row["terminal_id"]!,"token":token,"key":key])],mutation:true)[0]
+            if result["outcome"] as? String == "rejected" { return ["id":id,"error":"Question changed before the key could be sent. No key was sent."] }
+            guard result["outcome"] as? String == "written" else { throw HUDError("Choice delivery uncertain.") }
+            return ["id":id,"ok":true]
+        } catch { uncertainKeys.insert(id);guardedUncertainUntil[id]=Date(timeIntervalSinceNow:2);throw HUDError("Key delivery uncertain or refused. Wait a moment and check Herdr before trying again.") }
+    }
     func reconcileTerminalKeys(_ id: String) throws {
+        guard guardedUncertainUntil[id].map({ Date() >= $0 }) ?? true else { throw HUDError("Key delivery uncertain. Wait a moment before checking Herdr again.") }
         _ = try resolve(id)
+        guardedUncertainUntil.removeValue(forKey:id);choicePreviews.removeValue(forKey:id)
         uncertainKeys.remove(id); keyPreviews.removeValue(forKey:id)
     }
     func prompt(_ id: String, _ text: String, attachments: [ImageAttachment] = []) throws -> Row {

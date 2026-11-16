@@ -8,9 +8,14 @@ let supportsPreviews=false,previewMode=false,previewRequestID='';
 let supportsTerminalControls=false,terminalKeyRequests=new Map(),terminalKeyUncertain=new Set(),terminalScreenRendered='',terminalScreenAgent='';
 let attachmentPreview=null,attachmentButtons=new Map();
 let rosterMode='herdr',shepherdr=null,supportsShepherdr=false,selectedRow='';
+let supportsNativeApprovals=false,nativeApprovalStates=new Map(),nativeApprovalRequests=new Map(),nativeApprovalsBusy=new Set(),newCodexBusy=false;
+let completed=new Set(),queuedOutput=new Set(),quickPrompts=[],supportsQuick=false;
+let supportsDrafts=false,draftsLoaded=true,draftLabels=new Map(),draftTouched=new Set(),draftPersistence=null,storageRequests=new Map(),storageFailed=false,pendingDraftPrompt=new Set(),pendingDraftKeys=new Set();
 let baseline=false,unread=new Set(),drafts=new Map(),outputs=new Map(),since=new Map(),uncertain=new Set(),promptByRequest=new Map();
 function request(op,extra={}){const requestID=`${Date.now()}-${++requestSequence}`;post({op,requestID,...extra});return requestID;}
 function active(){const a=agents.find(a=>a.id===selected);if(a||!selected.startsWith('shepherdr:'))return a;const r=linked(selected);return r&&{id:r.view_id,online:true,agent_status:'readonly',agent:'shepherdr',workspace_label:r.space||r.title,machine_label:r.machine};}
+function statusLabel(a){return window.HUDUtilities?.status(a,completed.has(a?.id))||a?.agent_status||'Unknown';}
+function atBottom(){return window.HUDUtilities?.nearBottom($('output'))??true;}
 function name(a){return a.tab_label||a.name||a.pane_id||'Agent';}
 function rows(){return rosterMode==='shepherdr'&&supportsShepherdr?HUDModel.shepherdrRows(shepherdr,agents):null;}
 function linked(id){return id?rows()?.find(r=>r.view_id===id):undefined;}
@@ -18,8 +23,8 @@ function label(a){return linked(a.id)?.title||name(a);}
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function notice(text){$('notice').hidden=!text;$('notice').textContent=text;}
 function badge(){const list=rows();post({op:'badge',count:list?list.filter(r=>r.need||unread.has(r.agent_id)).length:agents.filter(a=>a.agent_status==='blocked'||unread.has(a.id)).length});}
-// A Shepherdr row keeps its selection when its agent starts, finishes or is replaced; the draft and any uncertain-send block move with it.
-function follow(){if(!selectedRow)selectedRow=linked(selected)?.key||'';const r=selectedRow&&rows()?.find(r=>r.key===selectedRow);if(!r?.view_id||r.view_id===selected)return;if(imagesFor(selected).length||attachmentLoads.get(selected)){notice('This agent changed. Images remain with this draft; remove them or select the new agent manually.');return;}if(uncertain.has(selected))uncertain.add(r.view_id);drafts.set(r.view_id,$('prompt').value);select(r.view_id);}
+// Follow replacement sessions only when no draft would be moved implicitly.
+function follow(){if(!selectedRow)selectedRow=linked(selected)?.key||'';const r=selectedRow&&rows()?.find(r=>r.key===selectedRow);if(!r?.view_id||r.view_id===selected)return;if(($('prompt').value||drafts.get(selected))||imagesFor(selected).length||attachmentLoads.get(selected)){notice('This agent changed. Your draft stays with its original session. Select the new agent and use Saved drafts to copy it.');return;}if(uncertain.has(selected))uncertain.add(r.view_id);drafts.set(r.view_id,$('prompt').value);select(r.view_id);}
 function renderModes(){$('modes').hidden=!supportsShepherdr;$('mode-herdr').setAttribute('aria-pressed',String(rosterMode==='herdr'));$('mode-shepherdr').setAttribute('aria-pressed',String(rosterMode==='shepherdr'));$('roster-label').textContent=rosterMode==='shepherdr'&&supportsShepherdr?'SPACES & TASKS':'AGENTS';$('search').placeholder=rosterMode==='shepherdr'&&supportsShepherdr?'Find a space or task…':'Find an agent…';}
 function renderShepherdr(list,roster,scroll){
   const shown=list.filter(r=>`${r.title} ${r.detail} ${r.state} ${r.machine}`.toLowerCase().includes(filter));$('count').textContent=list.filter(r=>r.kind==='task').length;
@@ -33,25 +38,26 @@ function renderRoster(){
   const roster=$('roster'),scroll=roster.scrollTop,list=rows();if(list)return renderShepherdr(list,roster,scroll);$('count').textContent=agents.length;
   const items=HUDModel.sorted(agents,unread).filter(a=>`${name(a)} ${a.workspace_label} ${a.machine_label} ${a.agent}`.toLowerCase().includes(filter));
   roster.replaceChildren(...items.map(a=>{const button=el('button',undefined,'agent'+(a.id===selected?' selected':'')+(!a.online?' offline':''));button.setAttribute('aria-pressed',String(a.id===selected));
-    const title=el('div',undefined,'agent-title');title.append(el('span',undefined,'dot '+(a.agent_status==='working'?'busy':a.agent_status==='blocked'||unread.has(a.id)?'attention':'')),el('span',name(a)));button.append(title);
-    const meta=el('div',undefined,'agent-meta');meta.append(el('div',a.workspace_label||a.workspace_id),el('div',a.machine_label+' · '+(a.agent||'agent')),el('div',a.online?a.agent_status:'Offline','agent-state'));button.append(meta);const metadata=HUDModel.parse(outputs.get(a.id)?.text||'',a.agent);button.title=metadata.model?`${metadata.model} ${metadata.reasoning}`:a.pane_id;button.onclick=()=>select(a.id);return button;}));
+    const title=el('div',undefined,'agent-title');title.append(el('span',undefined,'dot '+(a.agent_status==='working'?'busy':a.agent_status==='blocked'||unread.has(a.id)?'attention':'')),el('span',name(a)));if(unread.has(a.id))title.append(el('span','New','unread-pill'));button.append(title);
+    const meta=el('div',undefined,'agent-meta');meta.append(el('div',a.workspace_label||a.workspace_id),el('div',a.machine_label+' · '+(a.agent||'agent')),el('div',statusLabel(a),'agent-state'));button.append(meta);const metadata=HUDModel.parse(outputs.get(a.id)?.text||'',a.agent);button.title=metadata.model?`${metadata.model} ${metadata.reasoning}`:a.pane_id;button.onclick=()=>select(a.id);return button;}));
   if(!items.length)roster.append(el('p',agents.length?'No matching agents.':'No agents found. Start an agent in Herdr.','empty'));roster.scrollTop=scroll;
 }
 function select(id){
   if(id!==selected)closeAttachmentPreview(false);
-  drafts.set(selected,$('prompt').value);selectedRow=linked(id)?.key||'';selected=id;request('preferences',{selectedAgent:id});selectionEpoch++;lastRendered='';$('prompt').value=drafts.get(id)||'';
-  lastOutput=outputs.get(id)?.text||'';if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();
+  if(selected)drafts.set(selected,$('prompt').value);selectedRow=linked(id)?.key||'';selected=id;request('preferences',{selectedAgent:id});selectionEpoch++;lastRendered='';$('prompt').value=drafts.get(id)||'';
+  lastOutput=outputs.get(id)?.text||'';queuedOutput.delete(id);unread.delete(id);badge();if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();if(supportsNativeApprovals)request('nativeApprovals',{id});
 }
 function renderHeader(){
-  const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
+  const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
+  $('agent-status').textContent=statusLabel(a);$('agent-status').className='status-chip '+(a?.agent_status||'unknown');
   const state=a?.agent_status||'';const busy=state==='working';$('working').hidden=!busy;
   if(busy&&!since.has(a.id))since.set(a.id,Date.now());
-  $('send').disabled=!a?.online||a.can_prompt===false||!['idle','done'].includes(state)||sending||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
-  $('prompt').disabled=!a;$('chat').disabled=a?.agent!=='codex';
+  $('send').disabled=!draftsLoaded||storageFailed||!a?.online||a.can_prompt===false||!['idle','done'].includes(state)||sending||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
+  $('prompt').disabled=!a||!draftsLoaded;$('chat').disabled=a?.agent!=='codex';
   $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?'Agent is working. You can draft the next prompt here.':a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
   $('reconcile').hidden=!uncertain.has(selected);
-  renderTerminalControls();renderSuggestions();
+  renderNativeApprovals();renderTerminalControls();renderSuggestions();renderQuickPrompts();renderFileLinks();$('jump-latest').hidden=!queuedOutput.has(selected);$('draft-status').textContent=!supportsDrafts?'':!draftsLoaded?'Restoring saved drafts…':storageFailed?'Draft not saved — keep the HUD open.':'Draft recovery on';
   $('attach').hidden=!supportsAttachments;$('attach').disabled=!canAttach(a)||sending||uncertain.has(selected);renderAttachments();
 }
 function inline(text,parent){ // No terminal text is ever interpreted as HTML.
@@ -94,7 +100,7 @@ function renderApproval(block,node){
 }
 function renderTerminalControls(){
   const a=active(),preview=outputs.get(selected)?.terminalControl;
-  const visible=supportsTerminalControls&&a?.online&&a.agent_status==='blocked'&&['permission','question'].includes(a.input_kind)&&preview&&typeof preview.token==='string'&&typeof preview.text==='string';
+  const visible=!nativeCardsVisible()&&supportsTerminalControls&&a?.online&&a.agent_status==='blocked'&&['permission','question'].includes(a.input_kind)&&preview&&typeof preview.token==='string'&&typeof preview.text==='string';
   $('terminal-controls').hidden=!visible;
   $('output').hidden=!!visible||previewMode;$('previews').hidden=!!visible||!previewMode;
   if(!visible)return;
@@ -112,21 +118,60 @@ function renderTerminalControls(){
     }else screen.append(el('pre',preview.text));
     terminalScreenRendered=screenSignature;terminalScreenAgent=selected;screen.scrollTop=scroll;
   }
-  const uncertain=preview.uncertain||terminalKeyUncertain.has(selected),busy=terminalKeyRequests.size>0;
+  const uncertain=preview.uncertain||terminalKeyUncertain.has(selected),busy=terminalKeyRequests.size>0||pendingDraftKeys.size>0;
+  const choices=Array.isArray(preview.choices)&&preview.choiceToken?preview.choices:[];
+  $('approval-choices').hidden=!choices.length;
+  $('approval-choices').replaceChildren?.(...choices.map(item=>{const b=el('button','Send '+item.key);b.title='Displayed option: '+item.label;b.disabled=busy||uncertain;b.onclick=()=>approvalChoice(item.key);return b;}));
+  $('terminal-heading').textContent=choices.length?'Guarded number keys':'Manual terminal controls';
+  $('terminal-hint').textContent=choices.length?'Each button sends one digit if the observed terminal screen is unchanged. The terminal’s keybindings decide whether it selects or submits an option. No Enter is added.':'These keys go to the terminal, including Enter to submit its current selection. Keys wait for terminal output to become quiet and may be delayed. Use one control at a time.';
+
   for(const key of ['up','down','enter','esc'])$('terminal-'+key).disabled=busy||uncertain;
   $('terminal-key-reconcile').hidden=!uncertain;$('terminal-key-reconcile').disabled=busy;
   $('terminal-key-status').textContent=busy?'Sending one terminal key…':uncertain?'Key delivery uncertain. Check this agent in Herdr before enabling another key.':'Review the screen above before each key. The screen check cannot prevent changes during delivery.';
 }
 function terminalKey(key){
+  if(nativeCardsVisible())return;
   const a=active(),preview=outputs.get(selected)?.terminalControl;
   if(!supportsTerminalControls||!a?.online||a.agent_status!=='blocked'||!['permission','question'].includes(a.input_kind)||!preview||terminalKeyRequests.size||preview.uncertain||terminalKeyUncertain.has(selected)||!['up','down','enter','esc'].includes(key))return;
-  const id=selected,requestID=request('terminalKey',{id,token:preview.token,key});terminalKeyRequests.set(requestID,{id,operation:'terminalKey'});renderTerminalControls();
+  const id=selected;if(pendingDraftKeys.size)return;pendingDraftKeys.add(id);renderTerminalControls();beforeMutation(()=>{const requestID=request('terminalKey',{id,token:preview.token,key});terminalKeyRequests.set(requestID,{id,operation:'terminalKey'});pendingDraftKeys.delete(id);renderTerminalControls();},()=>{pendingDraftKeys.delete(id);renderTerminalControls();});
+}
+function approvalChoice(key){
+  if(nativeCardsVisible())return;
+  const a=active(),preview=outputs.get(selected)?.terminalControl;
+  if(!supportsTerminalControls||!a?.online||a.agent_status!=='blocked'||!preview?.choiceToken||!preview.choices?.some(x=>x.key===key)||terminalKeyRequests.size||pendingDraftKeys.size||preview.uncertain||terminalKeyUncertain.has(selected))return;
+  const id=selected,token=preview.choiceToken;pendingDraftKeys.add(id);renderTerminalControls();
+  beforeMutation(()=>{const requestID=request('approvalChoice',{id,token,key});terminalKeyRequests.set(requestID,{id,operation:'approvalChoice'});pendingDraftKeys.delete(id);renderTerminalControls();},()=>{pendingDraftKeys.delete(id);renderTerminalControls();});
 }
 for(const key of ['up','down','enter','esc'])$('terminal-'+key).onclick=()=>terminalKey(key);
 $('terminal-key-reconcile').onclick=()=>{
   if(terminalKeyRequests.size)return;
   const id=selected,requestID=request('reconcileTerminalKeys',{id});terminalKeyRequests.set(requestID,{id,operation:'reconcileTerminalKeys'});renderTerminalControls();
 };
+function nativeCardsVisible(){const state=nativeApprovalStates.get(selected);return supportsNativeApprovals&&!!state?.connected&&Array.isArray(state.cards)&&state.cards.length>0;}
+function renderNativeApprovals(){
+  const state=nativeApprovalStates.get(selected),box=$('native-approvals');box.hidden=!supportsNativeApprovals||!state?.linked;if(box.hidden)return;
+  $('native-approval-context').textContent='Linked chat: '+(state.threadId||'')+' · This approval belongs to this chat ID.';
+  $('native-approval-status').textContent=state.status||'Waiting for approval requests.';
+  $('native-reconnect').hidden=!!state.connected;
+  if(state.connected&&(state.cards||[]).length)$('send-status').textContent='Respond to the Codex approval above. Your draft stays here.';
+  const target=$('native-approval-cards');
+  target.replaceChildren?.(...(state.cards||[]).map(card=>{
+    const node=el('div',undefined,'native-approval-card');node.append(el('strong',card.question||'Approval requested'));
+    if(card.detail)node.append(el('pre',card.detail));
+    const actions=el('div',undefined,'native-approval-actions');
+    for(const choice of card.choices||[]){const b=el('button',choice.label);b.disabled=!state.connected||!!card.pending||nativeApprovalsBusy.has(card.token);b.onclick=()=>sendNativeApproval(card.token,choice.key);actions.append(b);}
+    node.append(actions);if(card.pending)node.append(el('p','Sending response… Waiting for Codex to resolve this request.'));return node;
+  }));
+}
+function sendNativeApproval(token,choice){
+  const state=nativeApprovalStates.get(selected),card=state?.cards?.find(c=>c.token===token);
+  if(!supportsNativeApprovals||!state?.connected||!card||card.pending||nativeApprovalsBusy.has(token)||!card.choices?.some(c=>c.key===choice))return;
+  nativeApprovalsBusy.add(token);const requestID=request('nativeApprovalResponse',{id:selected,token,choice});nativeApprovalRequests.set(requestID,{id:selected,token});renderNativeApprovals();
+}
+$('native-reconnect').onclick=()=>{if(supportsNativeApprovals)request('nativeApprovals',{id:selected,reconnect:true});};
+$('new-codex').onclick=()=>{if(!supportsNativeApprovals)return;$('new-codex-status').textContent='Choose its project folder to start.';$('new-codex-dialog').showModal();};
+$('new-codex-cancel').onclick=()=>{if(!newCodexBusy)$('new-codex-dialog').close();};
+$('new-codex-start').onclick=()=>{if(newCodexBusy)return;newCodexBusy=true;$('new-codex-start').disabled=true;$('new-codex-cancel').disabled=true;$('new-codex-status').textContent='Starting a new Codex session…';request('newCodexSession');};
 function loadPreviews(){
   $('preview-grid').replaceChildren();
   const local=active()?.machine_id==='local';
@@ -166,12 +211,12 @@ function renderAttachments(){
     const chip=el('div',undefined,'attachment'),image=el('img'),preview=el('button',undefined,'attachment-thumbnail');image.src=item.url;image.alt='';
     preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);preview.append(image);preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
     const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||uncertain.has(selected);
-    remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));renderHeader();};
+    remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));draftChanged();renderHeader();};
     chip.append(preview,el('span',item.name),remove);return chip;
   }));
 }
 async function stageImages(files){
-  if(!canAttach()||sending||uncertain.has(selected)){notice('Images are available for local hc Claude and Codex agents.');return;}
+  if(!draftsLoaded||!canAttach()||sending||uncertain.has(selected)){notice('Images are available for local hc Claude and Codex agents.');return;}
   const id=selected,list=Array.from(files),count=imagesFor(id).length+(attachmentLoads.get(id)||0);
   const stagedBytes=[...attachments.values()].flat().reduce((n,item)=>n+item.bytes,0)+pendingAttachmentBytes;
   if(!list.length)return;
@@ -186,7 +231,7 @@ async function stageImages(files){
       if(!valid)throw new Error('Use a valid raster image under 40 million pixels.');
       attachments.set(id,[...imagesFor(id),{key:++attachmentSequence,bytes:file.size,name:file.name.split(/[\\/]/).pop().slice(0,120)||'Image',url,data:url.slice(url.indexOf(',')+1)}]);
     }catch(error){notice(error.message||'Could not read image.');}
-    finally{pendingAttachmentBytes-=file.size;attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}
+    finally{draftChanged();pendingAttachmentBytes-=file.size;attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}
   }
 }
 $('attach').onclick=()=>$('attachment-files').click();
@@ -210,13 +255,14 @@ for(const kind of ['dragover','drop'])document.addEventListener(kind,e=>{
   if(kind==='drop'){stageImages(e.dataTransfer.files);}
 });
 function read(){if(!opened||reading||!active()?.online)return;reading=true;request('output',{id:selected});}
-function send(){if($('send').disabled)return;const id=selected,message=$('prompt').value;sending=true;notice('');const images=imagesFor(id).slice();const requestID=request('prompt',{id,message,attachments:images.map(x=>({data:x.data}))});promptByRequest.set(requestID,{id,message,images});renderHeader();}
+function send(){if($('send').disabled)return;const id=selected,message=$('prompt').value;sending=true;notice('');const images=imagesFor(id).slice();pendingDraftPrompt.add(id);renderHeader();beforeMutation(()=>{const requestID=request('prompt',{id,message,attachments:images.map(x=>({data:x.data}))});promptByRequest.set(requestID,{id,message,images});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;renderHeader();});}
 window.receive=({type,data})=>{
   if(type==='roster'){
     const before=agents;agents=data.agents||[];shepherdr=data.shepherdr||(rosterMode==='shepherdr'?shepherdr:null);
-    if(baseline)for(const a of agents){const old=before.find(b=>b.id===a.id);if(old&&a.online&&old.online&&old.agent_status!==a.agent_status)unread.add(a.id);}
+    if(baseline)for(const a of agents){const old=before.find(b=>b.id===a.id);if(old&&a.online&&old.online&&old.agent_status==='working'&&['idle','done'].includes(a.agent_status)){completed.add(a.id);unread.add(a.id);}if(a.agent_status==='working')completed.delete(a.id);if(old&&a.agent_status==='blocked'&&old.agent_status!=='blocked')unread.add(a.id);}
     const updates=baseline?HUDModel.alerts(before,agents):[];baseline=true;
     for(const a of agents){if(a.agent_status==='working'&&!since.has(a.id))since.set(a.id,Date.now());if(a.agent_status!=='working')since.delete(a.id);}
+    for(const a of agents)draftLabels.set(a.id,label(a));
     const valid=new Set(agents.map(a=>a.id));unread=new Set([...unread].filter(id=>valid.has(id)));
     if(updates.length&&!opened){const a=updates[0];request('alertPreview',{id:a.id,title:label(a)+(a.agent_status==='blocked'?' needs input':' finished')});}
     $('machines').replaceChildren(...(data.machines||[]).map(m=>{const node=el('span',undefined,'machine');node.append(el('span',undefined,'dot '+(m.online?'online':'')),document.createTextNode(`${m.label} · ${m.online?`${m.count} agents`:'offline'}`));node.title=m.error||'';return node;}));
@@ -229,28 +275,35 @@ window.receive=({type,data})=>{
   else if(type==='output'){
     reading=false;if(data.error){if(data.id===selected)notice(data.error);return;}
     outputs.set(data.id,data);if(data.id!==selected){read();return;}
-    lastOutput=data.text;notice('');if(opened){unread.delete(selected);badge();}renderOutput();renderRoster();renderTerminalControls();renderSuggestions();
-  }else if(type==='terminalKey'||type==='reconcileTerminalKeys'){
+    const changed=lastOutput!==data.text;notice('');if(changed&&lastRendered&&opened&&!atBottom()&&!data.terminalControl){queuedOutput.add(selected);unread.add(selected);renderHeader();renderRoster();badge();return;}lastOutput=data.text;if(opened&&!previewMode){unread.delete(selected);queuedOutput.delete(selected);badge();}renderOutput();renderRoster();renderHeader();
+  }else if(type==='terminalKey'||type==='approvalChoice'||type==='reconcileTerminalKeys'){
     const pending=terminalKeyRequests.get(data.requestID);if(!pending||pending.operation!==type)return;terminalKeyRequests.delete(data.requestID);
     if(data.error){notice(data.error);if(/uncertain/i.test(data.error))terminalKeyUncertain.add(pending.id);}
     else if(type==='reconcileTerminalKeys')terminalKeyUncertain.delete(pending.id);
     const output=outputs.get(pending.id);if(output)delete output.terminalControl;
-    renderTerminalControls();request('refresh');read();
+    draftChanged();renderTerminalControls();request('refresh');read();
   }else if(type==='prompt'){
     const pending=promptByRequest.get(data.requestID);if(!pending)return;promptByRequest.delete(data.requestID);sending=false;
     if(data.error){notice(data.error);if(/uncertain/i.test(data.error))uncertain.add(pending.id);}
-    else{if(selected===pending.id&&$('prompt').value===pending.message)$('prompt').value='';if(drafts.get(pending.id)===pending.message)drafts.delete(pending.id);const sent=new Set(pending.images.map(x=>x.key));attachments.set(pending.id,imagesFor(pending.id).filter(x=>!sent.has(x.key)));notice('Prompt sent.');request('refresh');}renderHeader();
+    else{if(selected===pending.id&&$('prompt').value===pending.message)$('prompt').value='';if(drafts.get(pending.id)===pending.message)drafts.delete(pending.id);const sent=new Set(pending.images.map(x=>x.key));attachments.set(pending.id,imagesFor(pending.id).filter(x=>!sent.has(x.key)));notice('Prompt sent.');request('refresh');}draftChanged();renderHeader();
   }else if(type==='previewFolderChanged'){if(data.id===selected&&previewMode)loadPreviews();
   }else if(type==='previews'){renderPreviews(data);
-  }else if(type==='preferences'){if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  }else if(type==='nativeApprovals'){if(typeof data.id==='string'){nativeApprovalStates.set(data.id,data);if(data.id===selected){renderHeader();}}}
+  else if(type==='nativeApprovalResponse'){const pending=nativeApprovalRequests.get(data.requestID);if(!pending)return;nativeApprovalRequests.delete(data.requestID);nativeApprovalsBusy.delete(pending.token);if(data.error)notice(data.error);renderNativeApprovals();}
+  else if(type==='newCodexProgress'){$('new-codex-status').textContent=data.message||'Complete startup in Herdr.';}
+  else if(type==='newCodexSession'){newCodexBusy=false;$('new-codex-start').disabled=false;$('new-codex-cancel').disabled=false;if(data.error){$('new-codex-status').textContent=data.error;}else if(data.cancelled){$('new-codex-status').textContent='Choose its project folder to start.';}else{$('new-codex-dialog').close();request('refresh');if(data.id)select(data.id);}}
+  else if(type==='preferences'){supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  else if(type==='quickPrompts'){quickPrompts=data.prompts;renderQuickPrompts();}
+  else if(type==='loadDrafts'){restoreDrafts(data);}
+  else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}
   else if(type==='notice'){notice(data.message);}
 };
-window.handleEscape=()=>{if(attachmentPreview)closeAttachmentPreview();else request('close');};
+window.handleEscape=()=>{if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();window.handleEscape();}});
 $('refresh').onclick=()=>request('refresh');$('close').onclick=()=>request('close');$('hide').onclick=()=>request('hide');$('send').onclick=send;
-$('reconcile').onclick=()=>{uncertain.delete(selected);notice('');renderHeader();};
+$('reconcile').onclick=()=>{uncertain.delete(selected);draftChanged();notice('');renderHeader();};
 $('search').oninput=()=>{filter=$('search').value.toLowerCase();renderRoster();};
-$('prompt').oninput=()=>{drafts.set(selected,$('prompt').value);renderHeader();};
+$('prompt').oninput=()=>{drafts.set(selected,$('prompt').value);draftChanged();renderHeader();};
 $('prompt').onkeydown=e=>{
   if(e.key!=='Enter'||e.isComposing||e.keyCode===229)return;
   // Modifier-Enter always inserts a newline, including Control on macOS,
@@ -270,6 +323,69 @@ const divider=$('divider');divider.onpointerdown=e=>{divider.setPointerCapture(e
 divider.onpointerup=()=>request('preferences',{rosterWidth:document.querySelector('aside').offsetWidth});
 divider.onkeydown=e=>{if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();const aside=document.querySelector('aside');aside.style.width=Math.min(Math.max(aside.offsetWidth+(e.key==='ArrowLeft'?-15:15),155),innerWidth*.42)+'px';request('preferences',{rosterWidth:aside.offsetWidth});}};
 setInterval(()=>{const a=active();if(a?.agent_status==='working'){const seconds=Math.max(0,Math.floor((Date.now()-(since.get(a.id)||Date.now()))/1000));$('work-text').textContent=`Working · ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')} observed`; }},1000);
+function renderFileLinks(){
+  const box=$('file-links'),items=outputs.get(selected)?.files||[];
+  box.hidden=!items.length||!!outputs.get(selected)?.terminalControl;if(!items.length)return;
+  const signature=JSON.stringify([selected,items]);if(box._signature===signature)return;box._signature=signature;
+  box.replaceChildren(...items.map(item=>{const b=el('button',item.name);b.title=item.path;b.onclick=()=>request('openFileLink',{id:selected,token:item.token});return b;}));
+}
+function renderQuickPrompts(){
+  $('quick-prompts').hidden=!supportsQuick;
+  if(!supportsQuick)return;
+  const target=$('quick-buttons'),signature=JSON.stringify([quickPrompts,!!active(),draftsLoaded]);
+  if(target._signature!==signature){target._signature=signature;target.replaceChildren(...quickPrompts.map(item=>{const b=el('button',item.label);b.title=item.text;b.disabled=!active()||!draftsLoaded;b.onclick=()=>{const input=$('prompt');if(input.disabled)return;input.value+=(input.value.trim()?'\n\n':'')+item.text;input.oninput();input.focus();};return b;}));}
+  $('recover-drafts').hidden=![...drafts.keys(),...attachments.keys()].some(id=>id!==selected&&((drafts.get(id)||'').length||imagesFor(id).length));
+}
+function editQuickPrompts(){
+  const list=$('quick-editor-rows');list.replaceChildren();
+  for(const item of quickPrompts)addQuickRow(item);
+  $('quick-editor').showModal();
+}
+function addQuickRow(item={label:'',text:''}){
+  const list=$('quick-editor-rows');if(list.children.length>=6)return;
+  const row=el('div',undefined,'quick-edit-row'),name=el('input'),body=el('textarea'),remove=el('button','Remove');
+  name.value=item.label;name.maxLength=32;name.placeholder='Button name';name.setAttribute('aria-label','Quick prompt name');
+  body.value=item.text;body.maxLength=2000;body.placeholder='Text to add to your draft';body.setAttribute('aria-label','Quick prompt text');remove.onclick=()=>row.remove();row.append(name,body,remove);list.append(row);
+}
+$('edit-quick').onclick=editQuickPrompts;$('quick-add').onclick=()=>addQuickRow();$('quick-cancel').onclick=()=>$('quick-editor').close();
+$('quick-save').onclick=()=>{try{const rows=Array.from($('quick-editor-rows').children).map(row=>({label:row.children[0].value,text:row.children[1].value}));const prompts=window.HUDUtilities.prompts(rows);request('saveQuickPrompts',{prompts});$('quick-editor').close();}catch(error){notice(error.message);}};
+$('jump-latest').onclick=()=>{lastOutput=outputs.get(selected)?.text||lastOutput;lastRendered='';queuedOutput.delete(selected);unread.delete(selected);renderOutput();renderHeader();renderRoster();badge();};
+$('output').onscroll=()=>{if(atBottom()&&queuedOutput.has(selected))$('jump-latest').onclick();};
+function draftState(){if(selected&&draftsLoaded)drafts.set(selected,$('prompt').value);return {drafts,attachments,uncertain,keyUncertain:terminalKeyUncertain,labels:draftLabels,pendingPromptIDs:[...pendingDraftPrompt,...[...promptByRequest.values()].map(x=>x.id)],pendingKeyIDs:[...pendingDraftKeys,...[...terminalKeyRequests.values()].map(x=>x.id)]};}
+function draftChanged(){if(selected)draftTouched.add(selected);draftPersistence?.changed(error=>{storageFailed=true;notice(error.message);renderHeader();});}
+function beforeMutation(action,failed){
+  if(!supportsDrafts){action();return;}
+  if(!draftsLoaded||!draftPersistence){notice('Wait for saved drafts to restore before sending.');failed();return;}
+  draftPersistence.flush().then(action).catch(error=>{storageFailed=true;notice(error.message);failed();renderHeader();});
+}
+function configureLocalFeatures(data){
+  supportsQuick=!!data.quickPromptsSupported;if(data.quickPrompts)quickPrompts=data.quickPrompts;
+  if(data.draftsSupported&&!supportsDrafts&&window.HUDDrafts){supportsDrafts=true;draftsLoaded=false;request('loadDrafts');renderHeader();}
+}
+function restoreDrafts(data){
+  if(data.error){storageFailed=true;draftsLoaded=true;notice(data.error);renderHeader();return;}
+  try{
+    const state=window.HUDDrafts.mergeRestored(data.snapshot,draftState(),draftTouched);
+    drafts=state.drafts;attachments=state.attachments;uncertain=state.uncertain;terminalKeyUncertain=state.keyUncertain;draftLabels=state.labels;
+    attachmentSequence=Math.max(0,...[...attachments.values()].flat().map(x=>x.key));draftsLoaded=true;
+    $('prompt').value=drafts.get(selected)||'';
+    draftPersistence=window.HUDDrafts.persistence({capture:()=>window.HUDDrafts.snapshot(draftState()),save:snapshot=>new Promise((resolve,reject)=>{const id=request('saveDrafts',{snapshot});storageRequests.set(id,{resolve,reject});})});
+    draftPersistence.start();renderHeader();
+  }catch(error){storageFailed=true;draftsLoaded=true;notice(error.message);renderHeader();}
+}
+window.flushDraftsForQuit=async()=>{if(!supportsDrafts)return true;if(!draftsLoaded||storageFailed||!draftPersistence)throw Error('Drafts could not be saved.');await draftPersistence.flush();return true;};
+$('recover-drafts').onclick=()=>{
+  const ids=[...new Set([...drafts.keys(),...attachments.keys()])].filter(id=>id!==selected&&((drafts.get(id)||'').length||imagesFor(id).length));
+  $('recovered-list').replaceChildren(...ids.map(id=>{const row=el('div',undefined,'recovered-row');row.append(el('strong',draftLabels.get(id)||'Saved session'),el('p',(drafts.get(id)||'').slice(0,240)),el('small',`${imagesFor(id).length} images`));const copy=el('button','Copy into current draft');copy.disabled=!active()||!draftsLoaded;copy.onclick=()=>{
+    if(imagesFor(selected).length+imagesFor(id).length>3){notice('Remove an image from the current draft first (3 maximum).');return;}
+    const input=$('prompt'),text=input.value+(input.value.trim()?'\n\n':'')+(drafts.get(id)||''),images=[...imagesFor(selected),...imagesFor(id).map(x=>({...x,key:++attachmentSequence}))];
+    try { const state=draftState(),nextDrafts=new Map(drafts),nextImages=new Map(attachments);nextDrafts.set(selected,text);nextImages.set(selected,images);window.HUDDrafts.snapshot({...state,drafts:nextDrafts,attachments:nextImages}); } catch(error){notice(error.message);return;}
+    input.value=text;attachments.set(selected,images);if(uncertain.has(id))uncertain.add(selected);if(terminalKeyUncertain.has(id))terminalKeyUncertain.add(selected);input.oninput();$('draft-recovery').close();
+  };const remove=el('button','Discard saved draft');remove.onclick=()=>{drafts.delete(id);attachments.delete(id);uncertain.delete(id);terminalKeyUncertain.delete(id);draftChanged();$('recover-drafts').onclick();};row.append(copy,remove);return row;}));
+  if(!$('draft-recovery').open)$('draft-recovery').showModal();
+};
+$('recovery-close').onclick=()=>$('draft-recovery').close();
+
 request('ready');
 // Read-only integration check used by --verify-ui; never presses Send.
 window.verifyControls=async()=>{

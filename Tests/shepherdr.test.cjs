@@ -46,16 +46,16 @@ test('Shepherdr mode lists spaces and tasks, badges needs-you, and sends only th
   h.$('send').onclick();h.$('send').onclick();
   const prompts=h.messages.filter(m=>m.op==='prompt');assert.equal(prompts.length,1);assert.equal(prompts[0].id,'C');
 });
-test('a selected task follows its agent as it finishes and starts again, keeping the draft',()=>{
+test('a draft remains bound to its original agent when a task replaces it',()=>{
   const h=harness('mac'),task=(agent_id)=>({...data,tasks:[{id:'APP-3',title:'Busy',status:'work',place:'p:Mac:app',agent_id,chat:'APP-3/Agent'}]});
   h.window.receive({type:'preferences',data:{shepherdrSupported:true,rosterMode:'shepherdr'}});h.window.receive({type:'roster',data:{agents,machines:[],shepherdr:task('B')}});
   h.buttons()[1].click();h.$('prompt').value='keep me';h.$('prompt').oninput();
   h.window.receive({type:'roster',data:{agents:[agents[0]],machines:[],shepherdr:task(null)}});
   assert.equal(h.$('title').textContent,'APP-3 · Busy');assert.equal(h.$('prompt').value,'keep me');assert.equal(h.$('send').disabled,true);
   h.window.receive({type:'roster',data:{agents:[agents[0],agent('B2','idle')],machines:[],shepherdr:task('B2')}});
-  assert.equal(h.$('title').textContent,'APP-3 · Busy');assert.equal(h.$('prompt').value,'keep me');assert.equal(h.$('send').disabled,false);
+  assert.equal(h.$('title').textContent,'APP-3 · Busy');assert.equal(h.$('prompt').value,'keep me');assert.equal(h.$('send').disabled,true);
   h.$('prompt').value='newer';h.$('prompt').oninput();h.window.receive({type:'roster',data:{agents:[agents[0]],machines:[],shepherdr:task(null)}});
-  assert.equal(h.$('prompt').value,'newer','the latest draft moves, never an older one');
+  assert.equal(h.$('prompt').value,'newer','the draft stays on the original session');
 });
 test('a restored selection follows its task too, and tasks with one id on two machines stay apart',()=>{
   const h=harness('mac'),both=(a,b)=>({spaces:[...data.spaces,{id:'p:Far:x',name:'x',machine:'Far',agent_id:null}],tasks:[{id:'APP-3',title:'Here',status:'work',place:'p:Mac:app',agent_id:a,chat:'APP-3/Agent'},{id:'APP-3',title:'There',status:'work',place:'p:Far:x',agent_id:b,chat:''}]});

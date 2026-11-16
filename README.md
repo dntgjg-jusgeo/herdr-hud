@@ -79,10 +79,64 @@ run the packaged app. Xcode command-line tools are needed to build from source.
 - The **H menu-bar item** has visibility, alternative shortcuts, launch-at-login,
   refresh, and quit controls. Login startup is off by default and remains unverified.
 - Drag the roster divider to resize it. Visibility, position, view, and divider
-  width are remembered. Prompt drafts are kept per agent while the app runs.
+  width are remembered. On macOS, prompt drafts and staged images are saved locally
+  per exact agent session and restored after restart. **Saved drafts** recovers drafts
+  from replaced sessions without silently sending them to a different agent.
 - Agents needing attention sort first, then working agents, then read idle agents.
 - Silent alerts appear above H (below it near the top edge) after an agent finishes or needs input. Hover to
   retain one, click to open its agent, or dismiss it. The attention badge remains.
+
+## HUD workflow additions (macOS source build)
+
+- **Draft recovery:** text, image thumbnails and uncertain-delivery blocks survive
+  restart. Drafts are private local files, not cloud sync. Storage errors stop sending
+  and normal quit so you can copy your work first.
+- **Unread replies:** a New badge marks agents that finish or need input. While
+  you read older output, **Jump to latest** reveals the queued update.
+- **Waiting states:** Ready, Working, Finished, Needs approval, Has a question,
+  Needs sign-in and Offline make the next action clearer.
+- **Files in replies:** local file buttons open supported images/PDFs in Preview,
+  text/code in TextEdit and office documents in Quick Look. Remote files and
+  executable attachments are not offered.
+- **Quick prompts:** **Edit shortcuts** saves up to six named prompt buttons.
+  Clicking one adds text to your draft; you still choose Send.
+- **Guarded number keys:** recognized menus can show literal **Send 1–4** buttons
+  only with the companion patched hc core and newly created compatible terminal
+  holders. They send one digit after checking the observed screen; terminal
+  keybindings determine the effect. These are not semantic approval API buttons.
+  Stock hc and existing holders retain manual arrow/Enter/Escape controls.
+
+### True Codex tool approvals
+
+**New Codex…** opens a fresh Astra/medium chat in Herdr with native approval
+integration. Choose a project folder and complete any Codex startup prompts in
+the new terminal. Existing chats keep running. After the new chat's first prompt,
+the HUD connects to that exact chat and shows supported Computer Use/MCP tool
+permission requests as **Allow**, **Allow for this session**, **Always allow**
+(only when offered), and **Cancel** buttons.
+
+These send structured decisions to the original Codex request ID, not keys.
+The terminal can still answer; resolved requests disappear from the HUD. Pending
+responses are not retried. A disconnected or changed session invalidates its
+buttons. The card identifies the linked chat UUID; changing chats with /new does
+not silently rebind the HUD. Other forms, sign-in and verification prompts, and
+shell/file permission menus remain in the terminal.
+
+The new mode uses stock Codex 0.169.0, a dedicated local app-server and the stock
+remote TUI. The connection is a private Unix socket, with no network listener or
+copied credentials. Session descriptors are private files under Application
+Support/Herdr HUD/CodexSessions. The service and TUI are separate hc terminals;
+Herdr tool-parent context refers to the service terminal. Do not treat that
+service as a second user-facing agent.
+
+A fresh chat initially has no resumable history; the HUD waits for the first
+prompt to materialize it. If Codex reports its transient history-not-ready error,
+wait for the first prompt to start and click **Reconnect**. Existing embedded
+Codex sessions cannot be attached in place through this API. This feature does
+not restart them or migrate their chats.
+
+The optional guarded-number backend is separate, tested source work and remains
+uninstalled. True native tool approvals do not depend on that core patch.
 
 ## Run on Windows
 

@@ -61,4 +61,49 @@ final class TerminalControlTests: XCTestCase {
         _ = try f.client.hc.terminalKey(id,token:token(f,id),key:"esc")
         XCTAssertEqual(f.mutations.count,2)
     }
+    let menu = """
+    Field 1/1
+    Allow Computer Use to use "Fixture"?
+    App: Fixture
+    > 1. Allow  Run the tool and continue
+    2. Allow for this session  Run the tool and remember
+    3. Always allow  Run the tool and remember
+    4. Cancel  Cancel this tool call
+    enter to submit | esc to cancel
+    """
+    func testGuardedNumberKeysAreSingleUseAndNeverFallBack() throws {
+        for outcome in ["written","rejected","uncertain","lost"] {
+            let f=fixture();f.features=["guarded_keys_v1"];f.screenText=menu
+            let id=f.id(),control=try f.client.output(id)["terminalControl"] as! Row
+            XCTAssertEqual((control["choices"] as? [Row])?.count,4)
+            f.checkedResult=["outcome":outcome];f.sendError=outcome=="lost"
+            if ["written","rejected"].contains(outcome) {
+                let result=try f.client.hc.approvalChoice(id,token:control["choiceToken"] as! String,key:"2")
+                XCTAssertEqual(result["ok"] as? Bool,outcome=="written" ? true:nil)
+                XCTAssertFalse(f.client.hc.uncertainKeys.contains(id))
+            } else {
+                XCTAssertThrowsError(try f.client.hc.approvalChoice(id,token:control["choiceToken"] as! String,key:"2"))
+                XCTAssertTrue(f.client.hc.uncertainKeys.contains(id))
+                XCTAssertThrowsError(try f.client.hc.reconcileTerminalKeys(id))
+            }
+            XCTAssertEqual(f.mutations.count,1)
+            let request=try JSONSerialization.jsonObject(with:f.mutations[0].input!) as! Row
+            XCTAssertEqual(request["method"] as? String,"terminal.keys_checked")
+            XCTAssertEqual((request["params"] as! Row)["key"] as? String,"2")
+            XCTAssertThrowsError(try f.client.hc.approvalChoice(id,token:"guarded-token",key:"2"))
+            XCTAssertEqual(f.mutations.count,1)
+        }
+    }
+    func testGuardedControlsRequireCapabilityIdentityAndRecognizedScreen() throws {
+        for mode in 0...3 {
+            let f=fixture();f.screenText=menu
+            if mode != 0 { f.features=["guarded_keys_v1"] }
+            if mode==1 { f.snapshotCore="other-core" }
+            if mode==2 { f.screenText=menu+"\nNew question" }
+            if mode==3 { f.screenText=menu.replacingOccurrences(of:"Field 1/1",with:"Field 1/2") }
+            let id=f.id(),control=try f.client.output(id)["terminalControl"] as! Row
+            XCTAssertNil(control["choiceToken"]);XCTAssertTrue(f.mutations.isEmpty)
+        }
+    }
+
 }

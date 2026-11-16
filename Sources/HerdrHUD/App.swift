@@ -60,6 +60,20 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     let client = HerdrClient(), shepherdr = ShepherdrClient(), work = DispatchQueue(label:"herdr-hud.transport",qos:.userInitiated)
     let defaults = UserDefaults.standard
     let previews = PreviewGallery()
+    let fileLinks = FileLinks(), draftStore = DraftStore()
+    lazy var codexLauncher = CodexSessionLauncher(client:client.hc,codex:NSHomeDirectory()+"/.local/bin/codex",onTerminalCreated:{ [weak self] address in
+        guard let self=self else { return }
+        do {
+            _ = try ProcessRunner(timeout:5).run(Invocation(executable:NSHomeDirectory()+"/.local/bin/herdr-app",arguments:["do","terminal.keep","--terminal",address],mutation:true))
+            DispatchQueue.main.async { self.emit("newCodexProgress",["message":"The new Codex terminal is open in Herdr. Complete any startup prompt there."]) }
+        } catch {
+            DispatchQueue.main.async { self.emit("newCodexProgress",["message":"New terminal "+address+" is running. Open it in Herdr to complete startup."]) }
+        }
+    })
+    var codexApprovals: [String:CodexApprovals] = [:], codexApprovalStates: [String:Row] = [:], codexApprovalEpochs: [String:UUID] = [:]
+    var codexApprovalBindings: [String:String] = [:], codexApprovalInvalid=Set<String>()
+    var launchingCodex = false
+    let draftWork = DispatchQueue(label:"herdr-hud.drafts",qos:.userInitiated)
     let previewWork = DispatchQueue(label:"herdr-hud.previews",qos:.userInitiated)
     var bubble: NSPanel!, panel: OverlayPanel!, bubbleView: BubbleView!, web: WKWebView!, status: NSStatusItem!
     var timer: Timer?, hotkeys: [EventHotKeyRef] = [], handler: EventHandlerRef?
@@ -110,6 +124,16 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         if visible { bubble.orderFrontRegardless() }
         timer = Timer.scheduledTimer(withTimeInterval:3,repeats:true) { [weak self] _ in self?.refresh() }
         refresh(); diagnostics()
+    }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard ready else { return .terminateNow }
+        web.callAsyncJavaScript("return await window.flushDraftsForQuit()",arguments:[:],in:nil,in:.page) { result in
+            switch result {
+            case .success: sender.reply(toApplicationShouldTerminate:true)
+            case .failure: self.emit("notice",["message":"Could not save your drafts. Keep HUD open and copy your draft before quitting."]); self.openPanel(); sender.reply(toApplicationShouldTerminate:false)
+            }
+        }
+        return .terminateLater
     }
     func configure(_ window: NSPanel) {
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
@@ -231,7 +255,10 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard visible, !polling else { return }; polling = true
         let mode = rosterMode
         work.async { var data = self.client.snapshot(); if mode == "shepherdr" { data["shepherdr"] = self.shepherdr.overlay(agents:data["agents"] as? [Row] ?? []) }; DispatchQueue.main.async {
-            self.polling = false; self.lastSnapshot = data; if self.visible { self.emit("roster",data) }; self.diagnostics()
+            self.polling = false; self.lastSnapshot = data;
+            let online = Set((data["agents"] as? [Row] ?? []).filter { $0["online"] as? Bool == true }.compactMap { $0["id"] as? String })
+            for id in Array(self.codexApprovals.keys) where !online.contains(id) { self.stopCodexApprovals(id,status:"This terminal is no longer available.") }
+ if self.visible { self.emit("roster",data) }; self.diagnostics()
         } }
     }
     func emit(_ type: String, _ data: Row) { guard ready else { return }; web.evaluateJavaScript("window.receive(" + encode(["type":type,"data":data]) + ")",completionHandler:nil) }
@@ -239,7 +266,84 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"terminalControlsSupported":self.client.usesHC]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "nativeApprovals":
+            guard client.usesHC,panelOpen,let id=data["id"] as? String else { return }
+            syncCodexApprovals(id,reconnect:data["reconnect"] as? Bool == true)
+        case "nativeApprovalResponse":
+            guard client.usesHC,panelOpen,let id=data["id"] as? String,id==selected,
+                  let token=data["token"] as? String,let choice=data["choice"] as? String else { return }
+            let epoch=codexApprovalEpochs[id],fingerprint=codexApprovalBindings[id]
+            work.async {
+                do {
+                    let row=try self.client.hc.resolve(id)
+                    guard let binding=try self.codexLauncher.binding(for:row),let fingerprint=fingerprint,encode(binding)==fingerprint else { throw HUDError("This session binding changed. Reconnect and review the approval again.") }
+                    DispatchQueue.main.async {
+                        var result:Row=["requestID":requestID,"id":id]
+                        do {
+                            guard self.panelOpen,self.selected==id,self.codexApprovalEpochs[id]==epoch,self.codexApprovalBindings[id]==fingerprint,let bridge=self.codexApprovals[id] else { throw HUDError("Selected session changed. Review the approval again.") }
+                            try bridge.respond(token:token,choice:choice);result["ok"]=true
+                        } catch { result["error"]=error.localizedDescription }
+                        self.emit("nativeApprovalResponse",result)
+                    }
+                } catch {
+                    let message=error.localizedDescription
+                    DispatchQueue.main.async { self.stopCodexApprovals(id,status:message,preserveLink:true);self.emit("nativeApprovalResponse",["requestID":requestID,"id":id,"error":message]) }
+                }
+            }
+        case "newCodexSession":
+            guard client.usesHC,panelOpen,!launchingCodex else { return }
+            launchingCodex=true
+            let picker=NSOpenPanel();picker.canChooseFiles=false;picker.canChooseDirectories=true;picker.allowsMultipleSelection=false;picker.prompt="Start new Codex";picker.message="Choose the project folder for a new Codex session with HUD approvals."
+            picker.beginSheetModal(for:panel) { response in
+                guard response == .OK,let url=picker.url else { self.launchingCodex=false;self.emit("newCodexSession",["cancelled":true]);return }
+                self.launchingCodex=true
+                self.work.async {
+                    var result:Row
+                    do { let launched=try self.codexLauncher.launch(directory:url.path);guard let agent=launched["agent"] as? Row,let id=agent["id"] as? String else { throw HUDError("Session started but could not be selected. Check Herdr.") };result=["id":id] }
+                    catch { result=["error":error.localizedDescription] }
+                    let value=result
+                    DispatchQueue.main.async { self.launchingCodex=false;self.emit("newCodexSession",value);self.refresh() }
+                }
+            }
+        case "loadDrafts", "saveDrafts":
+            guard !requestID.isEmpty else { return }
+            draftWork.async {
+                var result: Row = ["requestID":requestID]
+                do {
+                    if operation == "loadDrafts" { result["snapshot"] = try self.draftStore.load() }
+                    else { try self.draftStore.save(data["snapshot"] ?? [:]); result["ok"] = true }
+                } catch { result["error"] = error.localizedDescription }
+                let value=result
+                DispatchQueue.main.async { self.emit(operation,value) }
+            }
+        case "saveQuickPrompts":
+            do { let prompts=try QuickPrompts.validate(data["prompts"]); defaults.set(prompts,forKey:"quickPrompts"); emit("quickPrompts",["prompts":prompts]) }
+            catch { emit("notice",["message":error.localizedDescription]) }
+        case "openFileLink":
+            guard panelOpen,client.usesHC,let id=data["id"] as? String,id==selected,let token=data["token"] as? String else { return }
+            work.async {
+                do {
+                    let row=try self.client.hc.resolve(id)
+                    guard row["machine_id"] as? String == "local" else { throw HUDError("Open files on their local machine.") }
+                    let url=try self.fileLinks.resolve(agent:id,token:token)
+                    DispatchQueue.main.async {
+                        // Never launch an executable from terminal output. Source/text opens
+                        // in TextEdit, raster/PDF in Preview, office files in read-only Quick Look.
+                        let ext=url.pathExtension.lowercased()
+                        if FileLinks.documents.contains(ext) {
+                            let process=Process();process.executableURL=URL(fileURLWithPath:"/usr/bin/qlmanage");process.arguments=["-p",url.path]
+                            process.standardOutput=FileHandle.nullDevice;process.standardError=FileHandle.nullDevice
+                            do { try process.run() } catch { self.emit("notice",["message":"Could not preview this document."]) }
+                        } else {
+                            let app=FileLinks.images.contains(ext) ? "Preview" : "TextEdit"
+                            NSWorkspace.shared.open([url],withApplicationAt:URL(fileURLWithPath:"/System/Applications/"+app+".app"),configuration:NSWorkspace.OpenConfiguration()) { _,error in
+                                if error != nil { DispatchQueue.main.async { self.emit("notice",["message":"Could not open this file."]) } }
+                            }
+                        }
+                    }
+                } catch { let message=error.localizedDescription; DispatchQueue.main.async { self.emit("notice",["message":message]) } }
+            }
         case "close": closePanel()
         case "hide": if visible { toggleVisibility() }
         case "refresh": refresh()
@@ -290,13 +394,14 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 }
             }
         case "alert": if !panelOpen && visible { showToast(data) }
-        case "terminalKey", "reconcileTerminalKeys":
+        case "terminalKey", "approvalChoice", "reconcileTerminalKeys":
             guard panelOpen, self.client.usesHC, let id = data["id"] as? String, id == selected, !requestID.isEmpty else { return }
             guard !promptIDs.contains(requestID) else { return }; promptIDs.insert(requestID)
             work.async {
                 var result: Row
                 do {
                     if operation == "reconcileTerminalKeys" { try self.client.hc.reconcileTerminalKeys(id); result = ["id":id,"ok":true] }
+                    else if operation == "approvalChoice" { result = try self.client.hc.approvalChoice(id,token:data["token"] as? String ?? "",key:data["key"] as? String ?? "") }
                     else { result = try self.client.hc.terminalKey(id,token:data["token"] as? String ?? "",key:data["key"] as? String ?? "") }
                 } catch { result = ["id":id,"error":error.localizedDescription] }
                 result["requestID"] = requestID
@@ -311,11 +416,52 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 var result: Row
                 do { result = operation == "output" ? (id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)) : try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"]) }
                 catch { result = ["error":error.localizedDescription, "id":id] }
+                if operation == "output", result["error"] == nil, self.client.usesHC,
+                   let row=self.client.hc.bindings[id],row["machine_id"] as? String == "local",let directory=row["preview_directory"] as? String {
+                    result["files"]=self.fileLinks.discover(agent:id,output:result["text"] as? String ?? "",directory:directory)
+                }
                 result["requestID"] = requestID
                 let value = result
-                DispatchQueue.main.async { if operation == "output" { self.readBusy = false }; self.emit(operation,value) }
+                DispatchQueue.main.async { if operation == "output" { self.readBusy = false }; self.emit(operation,value);if operation == "output",self.client.usesHC { self.syncCodexApprovals(id) } }
             }
         default: break
+        }
+    }
+    func stopCodexApprovals(_ id:String,status:String,preserveLink:Bool=false) {
+        let thread=codexApprovalStates[id]?["threadId"] as? String ?? ""
+        if preserveLink { codexApprovalInvalid.insert(id) }
+        codexApprovalBindings.removeValue(forKey:id)
+        codexApprovalEpochs.removeValue(forKey:id)
+        codexApprovals.removeValue(forKey:id)?.disconnect()
+        let state:Row=["id":id,"linked":preserveLink,"connected":false,"status":status,"cards":[],"threadId":thread]
+        codexApprovalStates[id]=state;emit("nativeApprovals",state)
+    }
+    func syncCodexApprovals(_ id:String,reconnect:Bool=false) {
+        guard client.usesHC,!id.hasPrefix("shepherdr:") else { return }
+        if reconnect { codexApprovalInvalid.remove(id);stopCodexApprovals(id,status:"Reconnecting…") }
+        if codexApprovalInvalid.contains(id) { if let state=codexApprovalStates[id] { emit("nativeApprovals",state) };return }
+        work.async {
+            do {
+                let row=try self.client.hc.resolve(id),binding=try self.codexLauncher.binding(for:row)
+                DispatchQueue.main.async {
+                    guard !self.codexApprovalInvalid.contains(id) else { return }
+                    guard let binding=binding,let socket=binding["socket"] as? String,let thread=binding["threadID"] as? String else {
+                        if self.codexApprovals[id] != nil { self.stopCodexApprovals(id,status:"This terminal is no longer linked.") }
+                        else { self.emit("nativeApprovals",["id":id,"linked":false,"cards":[]]) };return
+                    }
+                    if self.codexApprovals[id] != nil { guard self.codexApprovalBindings[id]==encode(binding) else { self.stopCodexApprovals(id,status:"Session binding changed. Reconnect and review the request.",preserveLink:true);return };if let state=self.codexApprovalStates[id] { self.emit("nativeApprovals",state) };return }
+                    let epoch=UUID();self.codexApprovalEpochs[id]=epoch;self.codexApprovalBindings[id]=encode(binding)
+                    let bridge=CodexApprovals(binary:NSHomeDirectory()+"/.local/bin/codex",socket:socket,threadID:thread) { [weak self=self] state in
+                        guard let self=self,self.codexApprovalEpochs[id]==epoch else { return }
+                        let value=state.merging(["id":id,"linked":true],uniquingKeysWith:{_,new in new})
+                        self.codexApprovalStates[id]=value;self.emit("nativeApprovals",value)
+                    }
+                    self.codexApprovals[id]=bridge;bridge.connect()
+                }
+            } catch {
+                let message=error.localizedDescription
+                DispatchQueue.main.async { if self.codexApprovals[id] != nil { self.stopCodexApprovals(id,status:message) } }
+            }
         }
     }
     func loadPreviews(_ id: String, requestID: String) {

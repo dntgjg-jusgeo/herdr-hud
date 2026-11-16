@@ -11,6 +11,9 @@ final class HCTests: XCTestCase {
         var sendResult: Row = ["turn":2,"started":NSNull(),"status":NSNull()]
         var sendError = false, malformed = false
         var screenText = "Fixture reply", screenHow = "screen", screenComplete = true
+        var features: [String] = []
+        var checkedResult: Row = ["outcome":"written"]
+        var snapshotCore: String?
         var afterRead: (() -> Void)?
         var afterPut: (() -> Void)?
         var putResult: Row?
@@ -23,7 +26,10 @@ final class HCTests: XCTestCase {
                 let method = request["method"] as! String, params = request["params"] as! Row
                 var result: Row
                 switch method {
-                case "hello":result = ["core":["id":core],"generation":1,"framed":false]
+                case "hello":result = ["core":["id":core],"generation":1,"framed":false,"features":features]
+                case "terminal.input_snapshot":result = ["token":"guarded-token","text":screenText,"complete":screenComplete,"terminal":terminals[0],"core_id":snapshotCore ?? core]
+                case "terminal.keys_checked":
+                    if sendError { throw HUDError("unknown outcome") }; result = checkedResult
                 case "machine.list":result = ["machines":machines]
                 case "terminal.list":result = ["terminals":terminals]
                 case "terminal.get":result = terminals.first { $0["address"] as? String == params["terminal"] as? String } ?? [:]
@@ -136,4 +142,11 @@ final class HCTests: XCTestCase {
         let output=try ProcessRunner(timeout:5).run(Invocation(executable:"/usr/bin/python3",arguments:["-c",script],mutation:false,input:Data("{}\n".utf8),responseIDs:["fixture-id"]))
         XCTAssertTrue(output.contains("fixture-id"));XCTAssertLessThan(Date().timeIntervalSince(start),3)
     }
+    func testCodexServiceProcessesAreNotUserAgents() {
+        for argv in [["/fixture/codex","app-server","--listen","unix:///fixture/socket"],["/fixture/node","/fixture/codex.js","app-server","proxy"],["/fixture/codex","remote-control"]] {
+            XCTAssertNil(HCClient.provider(["foreground":["argv":argv]]))
+        }
+        XCTAssertEqual(HCClient.provider(["foreground":["argv":["/fixture/codex","--remote","unix:///fixture/socket"]]]),"codex")
+    }
+
 }
