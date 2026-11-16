@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id);
 const post=data=>window.webkit?.messageHandlers?.hud ? window.webkit.messageHandlers.hud.postMessage(data) : window.chrome.webview.postMessage(data);
 if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event=>window.receive(event.data));
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
-let orcaSupported=false,orcaOpen=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
+let orcaSupported=false,orcaOpen=false,orcaStandalone=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
 let supportsAttachments=false,attachments=new Map(),attachmentLoads=new Map(),attachmentSequence=0,pendingAttachmentBytes=0;
 let supportsPreviews=false,previewMode=false,previewRequestID='';
 let supportsTerminalControls=false,terminalKeyRequests=new Map(),terminalKeyUncertain=new Set(),terminalScreenRendered='',terminalScreenAgent='';
@@ -15,20 +15,21 @@ let queues=new Map(),queueSaving=false,queueHolds=new Map(),queuePaused=new Set(
 let supportsDrafts=false,draftsLoaded=true,draftLabels=new Map(),draftTouched=new Set(),draftPersistence=null,storageRequests=new Map(),storageFailed=false,pendingDraftPrompt=new Set(),pendingDraftKeys=new Set();
 let baseline=false,unread=new Set(),drafts=new Map(),outputs=new Map(),since=new Map(),uncertain=new Set(),promptByRequest=new Map();
 function request(op,extra={}){const requestID=`${Date.now()}-${++requestSequence}`;post({op,requestID,...extra});return requestID;}
+function orcaApplies(){const a=active();return orcaSupported&&((a?.agent==='opencode'&&a.orca_managed===true)||(!a&&orcaStandalone));}
 function renderOrcaPicker(rebuild=false){
-  $('orca-toggle').hidden=!orcaSupported;$('orca-toggle').setAttribute('aria-expanded',String(orcaOpen));$('orca-panel').hidden=!orcaSupported||!orcaOpen;
+  const visible=orcaApplies();$('orca-toggle').hidden=!visible;$('orca-toggle').setAttribute('aria-expanded',String(visible&&orcaOpen));$('orca-panel').hidden=!visible||!orcaOpen;
   $('orca-refresh').disabled=!!orcaCatalogRequest||orcaBusy;$('orca-search').disabled=orcaBusy;$('orca-select').disabled=orcaBusy||!!orcaCatalogRequest;
   if(rebuild){const visible=window.HUDOrcaModels?.search(orcaModels,$('orca-search').value)||[];const options=[el('option',visible.length?'Choose a model…':'No matching eligible models')];options[0].value='';for(const model of visible){const option=el('option',`${model.name||model.id} · ${model.releaseDate}`);option.value=model.id;options.push(option);}if(!visible.some(x=>x.id===orcaChosen))orcaChosen='';$('orca-select').replaceChildren(...options);$('orca-select').value=orcaChosen;}
   $('orca-launch').disabled=orcaBusy||!!orcaCatalogRequest||!orcaModels.some(x=>x.id===orcaChosen);
   $('orca-detail').textContent=window.HUDOrcaModels?.detail(orcaModels.find(x=>x.id===orcaChosen))||'';
 }
-function loadOrcaModels(){if(!orcaSupported||orcaBusy||orcaCatalogRequest)return;orcaCatalogRequest=request('orcaModels');$('orca-status').textContent='Loading your eligible OrcaRouter models…';renderOrcaPicker();}
-$('orca-toggle').onclick=()=>{orcaOpen=!orcaOpen;renderOrcaPicker();if(orcaOpen&&!orcaModels.length)loadOrcaModels();};
+function loadOrcaModels(){if(!orcaApplies()||orcaBusy||orcaCatalogRequest)return;orcaCatalogRequest=request('orcaModels');$('orca-status').textContent='Loading your eligible OrcaRouter models…';renderOrcaPicker();}
+$('orca-toggle').onclick=()=>{if(!orcaApplies())return;orcaOpen=!orcaOpen;renderOrcaPicker();if(orcaOpen&&!orcaModels.length)loadOrcaModels();};
 $('orca-close').onclick=()=>{orcaOpen=false;renderOrcaPicker();};
 $('orca-refresh').onclick=loadOrcaModels;
 $('orca-search').oninput=()=>renderOrcaPicker(true);
 $('orca-select').onchange=()=>{orcaChosen=$('orca-select').value;renderOrcaPicker();};
-$('orca-launch').onclick=()=>{if($('orca-launch').disabled)return;orcaBusy=true;orcaLaunchRequest=request('orcaLaunch',{model:orcaChosen});$('orca-status').textContent='Choose the project folder for this new OpenCode chat.';renderOrcaPicker();};
+$('orca-launch').onclick=()=>{if(!orcaApplies()||$('orca-launch').disabled)return;orcaBusy=true;orcaLaunchRequest=request('orcaLaunch',{model:orcaChosen});$('orca-status').textContent='Choose the project folder for this new OpenCode chat.';renderOrcaPicker();};
 function active(){const a=agents.find(a=>a.id===selected);if(a||!selected.startsWith('shepherdr:'))return a;const r=linked(selected);return r&&{id:r.view_id,online:true,agent_status:'readonly',agent:'shepherdr',workspace_label:r.space||r.title,machine_label:r.machine};}
 function statusLabel(a){return window.HUDUtilities?.status(a,completed.has(a?.id))||a?.agent_status||'Unknown';}
 function atBottom(){return window.HUDUtilities?.nearBottom($('output'))??true;}
@@ -59,6 +60,7 @@ function renderRoster(){
   if(!items.length)roster.append(el('p',agents.length?'No matching agents.':'No agents found. Start an agent in Herdr.','empty'));roster.scrollTop=scroll;
 }
 function select(id){
+  orcaStandalone=false;
   if(id!==selected)closeAttachmentPreview(false);
   if(selected)drafts.set(selected,$('prompt').value);selectedRow=linked(id)?.key||'';selected=id;request('preferences',{selectedAgent:id});selectionEpoch++;lastRendered='';$('prompt').value=drafts.get(id)||'';
   lastOutput=outputs.get(id)?.text||'';queuedOutput.delete(id);unread.delete(id);badge();if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();if(supportsNativeApprovals)request('nativeApprovals',{id});
@@ -67,6 +69,7 @@ function queueFor(id){return queues.get(id)||[];}
 function canQueue(a){return !!(supportsDrafts&&window.HUDFollowups&&a?.online&&['codex','claude','opencode'].includes(a.agent)&&['working','idle','done'].includes(a.agent_status));}
 function steerState(a){const s=nativeApprovalStates.get(a?.id);return a?.agent_status==='working'&&s?.canSteer&&!s.steerUncertain?s:null;}
 function renderHeader(){
+  renderOrcaPicker();
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
   $('agent-status').textContent=statusLabel(a);$('agent-status').className='status-chip '+(a?.agent_status||'unknown');
@@ -341,7 +344,7 @@ function sendPrompt(id,message,images,options={}){
   beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
 }
 window.receive=({type,data})=>{
-  if(type==='openOrcaModels'){orcaOpen=true;renderOrcaPicker();loadOrcaModels();}else if(type==='orcaModels'){
+  if(type==='openOrcaModels'){const target=agents.find(a=>a.agent==='opencode'&&a.orca_managed===true);select(target?.id||'');orcaStandalone=!target;orcaOpen=true;renderOrcaPicker();loadOrcaModels();}else if(type==='orcaModels'){
     if(data.requestID!==orcaCatalogRequest)return;orcaCatalogRequest='';
     if(data.error){orcaModels=[];orcaChosen='';$('orca-status').textContent=data.error;}
     else{orcaModels=data.models||[];$('orca-policy').textContent=`Released since ${data.cutoffDate} · Claude/OpenAI and automatic routers excluded · Unknown dates hidden`;$('orca-status').textContent=orcaModels.length?`${orcaModels.length} eligible models. Choose one, then click Open new OpenCode chat.`:'No models currently meet your provider and verified-release-date filters.';}
@@ -359,7 +362,7 @@ window.receive=({type,data})=>{
     if(updates.length&&!opened){const a=updates[0];request('alertPreview',{id:a.id,title:label(a)+(a.agent_status==='blocked'?' needs input':' finished')});}
     $('machines').replaceChildren(...(data.machines||[]).map(m=>{const node=el('span',undefined,'machine');node.append(el('span',undefined,'dot '+(m.online?'online':'')),document.createTextNode(`${m.label} · ${m.online?`${m.count} agents`:'offline'}`));node.title=m.error||'';return node;}));
     if(data.discoveryError)notice('Herdr setup: '+data.discoveryError);else if(rosterMode==='shepherdr'&&data.shepherdr?.error)notice('Shepherdr: '+data.shepherdr.error);
-    follow();if(!selected&&agents.length)select(rows()?.find(r=>r.agent_id)?.agent_id||agents[0].id);renderRoster();renderHeader();badge();read();pumpQueue();
+    follow();if(!selected&&!orcaStandalone&&agents.length)select(rows()?.find(r=>r.agent_id)?.agent_id||agents[0].id);renderRoster();renderHeader();badge();read();pumpQueue();
   }else if(type==='visibility'){opened=data.open;if(opened){renderHeader();read();}}
   else if(type==='resetBaseline'){baseline=false;}
   else if(type==='select'){select(data.id);}

@@ -132,7 +132,7 @@ they do not steer it mid-task.
 
 ### OrcaRouter models through OpenCode
 
-On macOS, **Orca models** opens a searchable, collapsible model picker. Select a
+On macOS, **Orca models** appears inside a managed OrcaRouter OpenCode conversation and opens a searchable, collapsible model picker. It stays hidden for Claude, Codex and other OpenCode agents. Herdr’s OrcaRouter launcher can still open the picker to create the first chat. Select a
 model, click **Open new OpenCode chat…**, then choose its project folder. Changing
 the dropdown alone does not launch anything or change an existing chat.
 
