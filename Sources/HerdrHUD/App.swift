@@ -63,6 +63,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     let fileLinks = FileLinks(), draftStore = DraftStore()
     let orcaModels = OrcaModels(), orcaCatalogWork = DispatchQueue(label:"herdr-hud.orca-catalog",qos:.userInitiated)
     let videoStore=VideoAttachments(), videoWork=DispatchQueue(label:"herdr-hud.video",qos:.userInitiated)
+    let mediaPreparation=DispatchQueue(label:"herdr-hud.media-preparation",qos:.userInitiated)
     var videoPreview:VideoPreview?
     var videoOffers:[String:([URL],String,Date)]=[:]
     var videoImports:[String:String]=[:] // videoWork only: upload token -> exact agent ID
@@ -519,12 +520,27 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     if operation == "output" {result = id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)}
                     else if self.client.usesHC {
                         let row=try self.client.hc.resolve(id)
-                        let prepared=try self.prepareMedia(message:data["message"] as? String ?? "",attachments:data["attachments"],row:row)
-                        if row["agent"] as? String == "opencode" {
-                            guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("This OpenCode session is not managed by the HUD.")}
-                            guard !self.orcaUncertain.contains(id) else {throw HUDError("OpenCode delivery uncertain. Inspect Herdr before sending again.")}
-                            result=try adapter.prompt(text:prepared.0,attachments:ImageAttachment.parse(prepared.1));result["id"]=id
-                        }else{result=try self.client.prompt(id,prepared.0,attachments:prepared.1)}
+                        try self.prepareMedia(message:data["message"] as? String ?? "",attachments:data["attachments"],row:row) { preparation in
+                            var delivered:Row
+                            do {
+                                let prepared=try preparation.get()
+                                // Preparation can take minutes. Bind and check readiness again on
+                                // the transport queue before any upload or prompt mutation.
+                                let current=try self.client.hc.resolve(id)
+                                if current["agent"] as? String == "opencode" {
+                                    guard let adapter=try self.orcaLauncher.adapter(for:current) else {throw HUDError("This OpenCode session is not managed by the HUD.")}
+                                    guard !self.orcaUncertain.contains(id) else {throw HUDError("OpenCode delivery uncertain. Inspect Herdr before sending again.")}
+                                    delivered=try adapter.prompt(text:prepared.0,attachments:ImageAttachment.parse(prepared.1));delivered["id"]=id
+                                }else{delivered=try self.client.prompt(id,prepared.0,attachments:prepared.1)}
+                            }catch {
+                                let unknown=(error as? OrcaOpenCode.Failure)?.uncertain ?? false
+                                if unknown{self.orcaUncertain.insert(id)}
+                                delivered=["error":error.localizedDescription,"id":id,"uncertain":unknown]
+                            }
+                            delivered["requestID"]=requestID;let value=delivered
+                            DispatchQueue.main.async{self.emit(operation,value)}
+                        }
+                        return
                     } else {result=try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])}
                 }
                 catch {let unknown=(error as? OrcaOpenCode.Failure)?.uncertain ?? false;if unknown{self.orcaUncertain.insert(id)};result = ["error":error.localizedDescription, "id":id,"uncertain":unknown] }
@@ -567,40 +583,61 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         let token=UUID().uuidString;videoOffers[token]=(urls,selected,Date())
         emit("videoOffer",["id":selected,"offer":token,"count":urls.count])
     }
-    // Video delivery is a local file reference, never an image or a video-vision claim.
-    func prepareMedia(message:String,attachments:Any?,row:Row)throws -> (String,[Row]) {
+    // Called on work; completion also runs on work. Slow decoding/recognition
+    // has its own serial queue so roster, approvals and output keep refreshing.
+    func prepareMedia(message:String,attachments:Any?,row:Row,completion:@escaping(Result<(String,[Row]),Error>)->Void)throws {
         guard attachments == nil || attachments is [Row] else{throw HUDError("Invalid attachments.")}
         let items=attachments as? [Row] ?? [];guard items.count<=3 else{throw HUDError("Attach up to three files.")}
-        let videos=items.filter{$0["kind"] as? String == "video"},images=items.filter{$0["kind"] as? String != "video"}
+        let videos=items.filter{$0["kind"] as? String == "video"}
         guard videos.isEmpty || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("MP4 attachments require a local Claude, Codex or managed OpenCode chat.")}
-        let paths=try videoWork.sync{try videos.map{try videoStore.reference($0).path}}
-        var text=message
-        if !paths.isEmpty{text += "\n\n[HUD attached videos]\nThese are local MP4 files. Use available video tools to inspect them; if video analysis is unavailable, say so. Each line is a JSON-quoted file path:\n"+paths.map{encode($0)}.joined(separator:"\n")+"\n[/HUD attached videos]"}
-        guard text.utf8.count<=60000 else{throw HUDError("Prompt and video references exceed 60 KB.")}
-        return(text,images)
+        if !videos.isEmpty {
+            if row["agent"] as? String == "opencode" {
+                guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("Open this model through the HUD OrcaRouter picker first.")}
+                try adapter.verifyCatalog(requireVision:true)
+            }
+            DispatchQueue.main.async {self.emit("notice",["message":"Preparing video frames and local speech transcript…"])}
+        }
+        if videos.isEmpty {completion(.success((message,items)));return}
+        mediaPreparation.async {
+            let prepared=Result {try VideoMedia.prepare(message:message,items:items,resolve:{item in
+                try self.videoWork.sync {try self.videoStore.reference(item)}
+            })}
+            self.work.async {completion(prepared)}
+        }
     }
     func performNativeSteer(id:String,turn:String,message:String,attachments:Any?,requestID:String) {
         let epoch=codexApprovalEpochs[id],fingerprint=codexApprovalBindings[id]
         work.async {
             do {
-                let row=try self.client.hc.resolve(id),prepared=try self.prepareMedia(message:message,attachments:attachments,row:row),images=try ImageAttachment.parse(prepared.1)
+                let row=try self.client.hc.resolve(id)
                 guard row["agent_status"] as? String == "working",row["agent"] as? String == "codex",
                       let binding=try self.codexLauncher.binding(for:row),let fingerprint=fingerprint,encode(binding)==fingerprint else{throw HUDError("This working Codex session changed. Your draft is retained.")}
-                DispatchQueue.main.async {
-                    guard self.panelOpen,self.selected==id,!self.codexSteerUncertain.contains(id),self.codexApprovalEpochs[id]==epoch,self.codexApprovalBindings[id]==fingerprint,let bridge=self.codexApprovals[id] else {
-                        self.emit("nativeSteer",["requestID":requestID,"id":id,"error":"The selected Codex session changed. Your draft is retained.","uncertain":false]);return
-                    }
-                    // Private image copying and validation stay off the UI thread.
-                    self.work.async {
-                        do {
-                            try bridge.steer(expectedTurnID:turn,text:prepared.0,attachments:images){result in
-                                if result["uncertain"] as? Bool == true{self.codexSteerUncertain.insert(id)}
-                                self.emit("nativeSteer",result.merging(["requestID":requestID,"id":id],uniquingKeysWith:{_,new in new}))
+                try self.prepareMedia(message:message,attachments:attachments,row:row) {preparation in
+                    do {
+                        let prepared=try preparation.get(),images=try ImageAttachment.parse(prepared.1)
+                        let current=try self.client.hc.resolve(id)
+                        guard current["agent_status"] as? String == "working",current["agent"] as? String == "codex",
+                              let binding=try self.codexLauncher.binding(for:current),encode(binding)==fingerprint else{throw HUDError("This working Codex session changed. Your draft is retained.")}
+                        DispatchQueue.main.async {
+                            guard self.panelOpen,self.selected==id,!self.codexSteerUncertain.contains(id),self.codexApprovalEpochs[id]==epoch,self.codexApprovalBindings[id]==fingerprint,let bridge=self.codexApprovals[id] else {
+                                self.emit("nativeSteer",["requestID":requestID,"id":id,"error":"The selected Codex session changed. Your draft is retained.","uncertain":false]);return
                             }
-                        }catch {
-                            let error=error.localizedDescription
-                            DispatchQueue.main.async{self.emit("nativeSteer",["requestID":requestID,"id":id,"error":error,"uncertain":false])}
+                            // Private image copying and validation stay off the UI thread.
+                            self.work.async {
+                                do {
+                                    try bridge.steer(expectedTurnID:turn,text:prepared.0,attachments:images){result in
+                                        if result["uncertain"] as? Bool == true{self.codexSteerUncertain.insert(id)}
+                                        self.emit("nativeSteer",result.merging(["requestID":requestID,"id":id],uniquingKeysWith:{_,new in new}))
+                                    }
+                                }catch {
+                                    let error=error.localizedDescription
+                                    DispatchQueue.main.async{self.emit("nativeSteer",["requestID":requestID,"id":id,"error":error,"uncertain":false])}
+                                }
+                            }
                         }
+                    }catch {
+                        let error=error.localizedDescription
+                        DispatchQueue.main.async{self.emit("nativeSteer",["requestID":requestID,"id":id,"error":error,"uncertain":false])}
                     }
                 }
             }catch {

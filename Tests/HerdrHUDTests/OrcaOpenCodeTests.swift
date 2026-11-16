@@ -4,6 +4,7 @@ import AppKit
 
 final class OrcaOpenCodeTests:XCTestCase {
     final class Fixture {
+        var vision=true
         let endpoint=URL(string:"http://127.0.0.1:43981")!
         let session="sesfixture",model="deepseek/deepseek-v4.1-flash",directory="/private/tmp/fixture"
         var pid:Any=123,version="2.1.4",rootCount=1,otherRoot=false,working=false,blocked=false,wrongAck=false,failMutation=false
@@ -27,7 +28,7 @@ final class OrcaOpenCodeTests:XCTestCase {
             } else if request.httpMethod == "POST",path == "/api/session" { value=["data":root]
             } else if path == "/api/info" { value=["version":version,"pid":pid]
             } else if path == "/api/model" {
-                var models:[Row]=[["id":model,"modelID":model,"providerID":"orcarouter","enabled":true]]
+                var models:[Row]=[["id":model,"modelID":model,"providerID":"orcarouter","enabled":true,"capabilities":["input":vision ? ["text","image"] : ["text"]]]]
                 if extraModel { models.append(["id":"anthropic/claude-excluded","modelID":"anthropic/claude-excluded","providerID":"orcarouter","enabled":true]) }
                 value=["location":["directory":directory],"data":models]
             } else if path == "/api/provider" {
@@ -85,6 +86,13 @@ final class OrcaOpenCodeTests:XCTestCase {
         let files=body["files"] as! [Row]
         XCTAssertTrue((files[0]["uri"] as! String).hasPrefix("data:image/png;base64,"))
         XCTAssertFalse((files[0]["uri"] as! String).contains("file:"))
+    }
+    func testTextOnlyModelRefusesImagesBeforeDispatch()throws {
+        let f=Fixture();f.vision=false;let a=try f.adapter()
+        let png=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:4,pixelsHigh:4,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!.representation(using:.png,properties:[:])!
+        XCTAssertThrowsError(try a.prompt(text:"Video",attachments:ImageAttachment.parse([["data":png.base64EncodedString()]])))
+        XCTAssertFalse(f.requests.contains{$0.httpMethod == "POST"})
+        XCTAssertEqual(try a.prompt(text:"Text still works")["ok"] as? Bool,true)
     }
     func testPostDispatchFailureLatchesWithoutAutomaticRetry()throws {
         for malformed in [false,true] {

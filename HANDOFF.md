@@ -549,3 +549,23 @@ prepareMedia enforces local HC agents, resolves private references and adds
 JSON-quoted paths before the existing prompt/expected-turn transport. Existing
 image attachments keep their original delivery path. Queue authorization compares
 ordered persisted video references before consumption. No automatic retry is added.
+
+## Video analysis material — November 16, 2026
+
+VideoMedia replaces each MP4 with one bounded six-frame timestamped JPEG sheet
+and adds local automatic speech transcription plus the original file reference.
+The three-attachment transport limit stays unchanged. VideoAnalysis uses native
+AVFoundation with external references forbidden and bounded decode deadlines;
+VideoTranscription extracts mono 16k PCM locally, uses existing whisper.cpp with
+two CPU threads, and refuses clips over ten minutes or oversized/failed output.
+No cloud transcription, runtime download, permission bypass or uncertain retry.
+
+Media preparation is serialized separately from the native work queue. Resolve and
+Orca capability checks run on work; all transport/session guards run again after
+preparation. No agent mutation happens on a preprocessing failure. Existing drafts
+and queue snapshots are unchanged. Original cached MP4 remains available.
+
+Orca catalog architecture.input_modalities is retained as vision; new OpenCode
+configuration declares capabilities.input=[text,image] only when reported. Adapter
+checks actual server model capabilities before dispatching images; missing/unknown
+vision refuses before POST. Existing sessions are not silently restarted.

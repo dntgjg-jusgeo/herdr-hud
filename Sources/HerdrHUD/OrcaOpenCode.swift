@@ -90,7 +90,7 @@ final class OrcaOpenCode {
     }
     /// A fresh provider namespace must expose only the selected model. Built-in
     /// Orca's broad catalog is never accepted as a model pin.
-    func verifyCatalog() throws {
+    func verifyCatalog(requireVision:Bool = false) throws {
         var query=URLComponents();query.queryItems=[URLQueryItem(name:"location[directory]",value:directory)]
         let suffix="?"+(query.percentEncodedQuery ?? "")
         let catalog=try call("GET","/api/model"+suffix)
@@ -98,6 +98,9 @@ final class OrcaOpenCode {
               let models=catalog["data"] as? [Row],models.count == 1,
               models[0]["id"] as? String == modelID,models[0]["modelID"] as? String == modelID,
               models[0]["providerID"] as? String == providerID,models[0]["enabled"] as? Bool == true else { throw Self.refusal("This managed OpenCode server must expose only the selected OrcaRouter model.") }
+        if requireVision {
+            guard ((models[0]["capabilities"] as? Row)?["input"] as? [String])?.contains("image") == true else { throw Self.refusal("This OpenCode model has no verified image input. Open a new vision-capable OrcaRouter chat from the HUD before sending images or videos. Your draft is retained.") }
+        }
         // model.list waits for initial plugin settlement; provider.list alone
         // can return an empty snapshot before that boundary.
         let providers=try call("GET","/api/provider"+suffix)
@@ -153,6 +156,7 @@ final class OrcaOpenCode {
             let mime=checked.name.lowercased().hasSuffix(".png") ? "image/png" : checked.name.lowercased().hasSuffix(".gif") ? "image/gif" : checked.name.lowercased().hasSuffix(".webp") ? "image/webp" : "image/jpeg"
             files.append(["uri":"data:"+mime+";base64,"+checked.data.base64EncodedString(),"name":checked.name])
         }
+        if !attachments.isEmpty {try verifyCatalog(requireVision:true)}
         let current=try snapshot()
         guard current["canQueue"] as? Bool == true else { throw Self.refusal("This OpenCode chat needs input in its terminal before accepting a prompt.") }
         let id="msg_"+UUID().uuidString.replacingOccurrences(of:"-",with:"").lowercased()

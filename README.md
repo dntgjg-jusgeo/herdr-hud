@@ -139,9 +139,23 @@ composer. Click it to open the private copy in the HUD’s video player.
 
 Videos stay with their exact draft or queued prompt, including after restart.
 The HUD keeps a private local copy; moving the original does not break the draft.
-On Send, local Claude, Codex and managed OpenCode receive a JSON-quoted local file
-reference and instructions to use available video tools. This does not guarantee
-native video understanding. Remote agents are not supported for video attachments.
+On Send, the HUD prepares six timestamped frames as a contact sheet and transcribes
+spoken audio locally with whisper.cpp. Local Claude, Codex and managed OpenCode
+receive the images, automatic transcript and original MP4 reference. This samples
+the video; brief events between samples and non-speech sounds are not captured.
+Agents can use the original file for closer inspection. Analysis supports clips up
+to ten minutes; preparation failures retain the draft without sending it.
+
+Speech needs an installed Homebrew `whisper-cpp` and a local tiny/base/small ggml
+model under `~/Library/Application Support/Herdr HUD/Transcription` (the existing
+HyperFrames model cache is also recognized). No engine or model is downloaded at
+runtime. English-only models are labeled in the transcript. Automatic transcripts
+can contain errors. Preparation runs separately from roster polling.
+
+OpenCode requires a model marked **Vision** in the Orca picker. Open a new chat
+from the updated picker to apply its image capability configuration; older chats
+are preserved and refuse image/video sends if that capability is missing. Text-only
+models cannot inspect the video frames. Remote video attachments are unsupported.
 No video is sent to an external service merely by attaching or previewing it.
 
 Video cache storage is capped at 512 MB/128 clips. Completed copies are retained

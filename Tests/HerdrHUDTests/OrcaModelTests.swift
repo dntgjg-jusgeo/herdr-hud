@@ -11,6 +11,12 @@ final class OrcaModelTests: XCTestCase {
     func releases(_ values:[String:String]) -> [String:Row] { values.mapValues { ["releaseDate":$0,"sourceURL":"https://publisher.example/releases/exact-model"] } }
     func data(_ rows:[Row]) throws -> Data { try JSONSerialization.data(withJSONObject:["object":"list","data":rows]) }
     func models(_ envelope:Row) -> [Row] { envelope["models"] as! [Row] }
+    func testVisionRequiresExplicitImageInputMetadata() throws {
+        var visual=record("independent/visual");visual["architecture"]=["input_modalities":["text","image"]]
+        let result=try OrcaModels.normalize(data([visual,record("independent/unknown")]),releases:releases(["independent/visual":"2026-10-01","independent/unknown":"2026-10-01"]),now:today,calendar:calendar)
+        XCTAssertEqual(models(result).first{$0["id"] as? String == "independent/visual"}?["vision"] as? Bool,true)
+        XCTAssertEqual(models(result).first{$0["id"] as? String == "independent/unknown"}?["vision"] as? Bool,false)
+    }
     func testLocalCalendarWindowIsInclusiveAndUnknownDatesNeverUseCreated() throws {
         let rows=[record("independent/boundary"),record("independent/old"),record("independent/new"),record("independent/unknown"),record("independent/future")]
         let dates=releases(["independent/boundary":"2026-07-16","independent/old":"2026-07-15","independent/new":"2026-11-10","independent/future":"2026-11-17"])

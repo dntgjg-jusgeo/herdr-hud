@@ -2,6 +2,17 @@ import XCTest
 @testable import HerdrHUD
 
 final class OrcaSessionLauncherTests: XCTestCase {
+    func testConfigurationPreservesVerifiedVisionCapability() throws {
+        var model:Row=["id":"fixture/vision","name":"Fixture","openAIChat":true,"vision":true]
+        let provider="herdr-orca-"+String(repeating:"a",count:32)
+        func inputs(_ model:Row)throws->[String]? {
+            let config=try OrcaSessionLauncher.configuration(model:model,providerID:provider)
+            let providers=config["providers"] as! [String:Row],models=providers[provider]!["models"] as! [String:Row]
+            return (models["fixture/vision"]!["capabilities"] as? Row)?["input"] as? [String]
+        }
+        XCTAssertEqual(try inputs(model),["text","image"])
+        model.removeValue(forKey:"vision");XCTAssertEqual(try inputs(model),["text"])
+    }
     final class Fixture {
         let root:URL, executable:String
         let key="fixture-key-never-a-real-secret"

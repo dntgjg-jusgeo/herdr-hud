@@ -93,6 +93,7 @@ final class OrcaModels {
             guard chat,openAIChat else { continue }
             var model: Row=["id":id,"name":name,"releaseDate":date,"releaseSource":source,"chat":true,"openAIChat":true,
                 "anthropicMessages":types.contains("anthropic") || capabilities.contains("anthropic_messages")]
+            model["vision"] = ((record["architecture"] as? Row)?["input_modalities"] as? [String])?.contains("image") == true
             if let parameters=record["supported_parameters"] as? [String],parameters.contains("tools") { model["tools"]=true }
             if let context=record["context_length"] as? NSNumber,CFGetTypeID(context) != CFBooleanGetTypeID(),
                context.doubleValue > 0,context.doubleValue <= 1_000_000_000,context.doubleValue.rounded(.down) == context.doubleValue { model["contextLength"]=context }

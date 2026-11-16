@@ -20,7 +20,7 @@ function orcaApplies(){const a=active();return orcaSupported&&((a?.agent==='open
 function renderOrcaPicker(rebuild=false){
   const visible=orcaApplies();$('orca-toggle').hidden=!visible;$('orca-toggle').setAttribute('aria-expanded',String(visible&&orcaOpen));$('orca-panel').hidden=!visible||!orcaOpen;
   $('orca-refresh').disabled=!!orcaCatalogRequest||orcaBusy;$('orca-search').disabled=orcaBusy;$('orca-select').disabled=orcaBusy||!!orcaCatalogRequest;
-  if(rebuild){const visible=window.HUDOrcaModels?.search(orcaModels,$('orca-search').value)||[];const options=[el('option',visible.length?'Choose a model…':'No matching eligible models')];options[0].value='';for(const model of visible){const option=el('option',`${model.name||model.id} · ${model.releaseDate}`);option.value=model.id;options.push(option);}if(!visible.some(x=>x.id===orcaChosen))orcaChosen='';$('orca-select').replaceChildren(...options);$('orca-select').value=orcaChosen;}
+  if(rebuild){const visible=window.HUDOrcaModels?.search(orcaModels,$('orca-search').value)||[];const options=[el('option',visible.length?'Choose a model…':'No matching eligible models')];options[0].value='';for(const model of visible){const option=el('option',`${model.name||model.id} · ${model.releaseDate}${model.vision?" · Vision":" · Text only"}`);option.value=model.id;options.push(option);}if(!visible.some(x=>x.id===orcaChosen))orcaChosen='';$('orca-select').replaceChildren(...options);$('orca-select').value=orcaChosen;}
   $('orca-launch').disabled=orcaBusy||!!orcaCatalogRequest||!orcaModels.some(x=>x.id===orcaChosen);
   $('orca-detail').textContent=window.HUDOrcaModels?.detail(orcaModels.find(x=>x.id===orcaChosen))||'';
 }

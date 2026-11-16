@@ -103,6 +103,7 @@ final class OrcaSessionLauncher {
               let name=model["name"] as? String else { throw refused("Choose a currently approved OpenAI-compatible OrcaRouter model.") }
         var record:Row=["id":id,"name":name,"supported_endpoint_types":["openai"]]
         if model["tools"] as? Bool == true { record["supported_parameters"]=["tools"] }
+        record["architecture"]=["input_modalities":model["vision"] as? Bool == true ? ["text","image"] : ["text"]]
         record["context_length"]=model["contextLength"];record["max_completion_tokens"]=model["outputLength"]
         let data=try JSONSerialization.data(withJSONObject:["data":[record]])
         let result=try OrcaModels.normalize(data,releases:OrcaModels.bundledReleases(),now:Date())
@@ -115,7 +116,8 @@ final class OrcaSessionLauncher {
         let selected=providerID+"/"+id
         var entry:Row=["modelID":id,"name":model["name"] as? String ?? id,"releaseDate":model["releaseDate"] ?? ""]
         var limits:Row=[:];if let value=model["contextLength"] { limits["context"]=value };if let value=model["outputLength"] { limits["output"]=value };if !limits.isEmpty { entry["limit"]=limits }
-        if model["tools"] as? Bool == true { entry["capabilities"]=["tools":true] }
+        var capabilities:Row=["input":model["vision"] as? Bool == true ? ["text","image"] : ["text"]]
+        if model["tools"] as? Bool == true { capabilities["tools"]=true };entry["capabilities"]=capabilities
         return ["model":selected,"warming":false,"share":"disabled","media":["image":["auto_resize":false]],
             "providers":[providerID:["package":"@opencode/ai/providers/openai-compatible","settings":["baseURL":"https://api.orcarouter.ai/v1","apiKey":"{env:ORCAROUTER_API_KEY}"],"models":[id:entry]]],
             "agents":["title":["model":selected],"compaction":["model":selected]],
