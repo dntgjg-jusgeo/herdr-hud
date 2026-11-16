@@ -84,6 +84,7 @@ final class HCClient {
                        "workspace_id":labels["herdr.space"] ?? cwd,"workspace_label":workspace,
                        "tab_id":labels["herdr.tab"] ?? address,"tab_label":title.isEmpty ? address : title,"name":title,
                        "machine_id":machineID,"machine_label":label,"online":true]
+        if machineID == "local", cwd.hasPrefix("/") { row["preview_directory"] = cwd }
         row["id"] = encode([core, address, identity])
         return row
     }

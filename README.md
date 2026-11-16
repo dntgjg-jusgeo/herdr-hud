@@ -319,3 +319,8 @@ MIT licensed. Derived from Alex Finn's MIT-licensed Herdr HUD for Omarchy.
 Community project; not affiliated with Herdr or Basecamp.
 
 Implementation references: [Apple fullscreen overlay behavior](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior-swift.struct/canjoinallapplications) and [Herdr CLI host/session scope](https://herdr.dev/docs/cli-reference/).
+
+On macOS, **Previews** beside Chat/Terminal shows up to 24 recent local images
+from the agent's folder and `outputs`. Use **Choose folder…** if its project
+folder differs. Click a thumbnail to open a read-only copy in Preview; edits to
+that copy do not change the original. Remote image previews are not supported.

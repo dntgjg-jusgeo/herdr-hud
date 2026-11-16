@@ -58,6 +58,8 @@ final class BubbleView: NSView {
 final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate {
     let client = HerdrClient(), shepherdr = ShepherdrClient(), work = DispatchQueue(label:"herdr-hud.transport",qos:.userInitiated)
     let defaults = UserDefaults.standard
+    let previews = PreviewGallery()
+    let previewWork = DispatchQueue(label:"herdr-hud.previews",qos:.userInitiated)
     var bubble: NSPanel!, panel: OverlayPanel!, bubbleView: BubbleView!, web: WKWebView!, status: NSStatusItem!
     var timer: Timer?, hotkeys: [EventHotKeyRef] = [], handler: EventHandlerRef?
     var visible = true, panelOpen = false, ready = false, polling = false
@@ -231,7 +233,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
         case "close": closePanel()
         case "hide": if visible { toggleVisibility() }
         case "refresh": refresh()
@@ -240,6 +242,39 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             if let width = data["rosterWidth"] as? Double, width >= 155 && width <= 600 { defaults.set(width,forKey:"rosterWidth") }
             if let mode = data["mode"] as? String, ["chat","terminal"].contains(mode) { defaults.set(mode,forKey:"viewMode") }
             if let mode = data["rosterMode"] as? String, ["herdr","shepherdr"].contains(mode), mode != rosterMode { defaults.set(mode,forKey:"rosterMode"); refresh() }
+        case "previews", "choosePreviewFolder", "openPreview":
+            guard panelOpen, let id = data["id"] as? String,
+                  let row = (lastSnapshot["agents"] as? [Row])?.first(where: { $0["id"] as? String == id }),
+                  row["machine_id"] as? String == "local", row["online"] as? Bool == true else { return }
+            if operation == "choosePreviewFolder" {
+                let picker = NSOpenPanel()
+                picker.title = "Choose local preview folder"
+                picker.canChooseDirectories = true; picker.canChooseFiles = false; picker.allowsMultipleSelection = false
+                picker.beginSheetModal(for:panel) { response in
+                    guard response == .OK, let url = picker.url, PreviewGallery.localDirectory(url) else { return }
+                    var folders = self.defaults.dictionary(forKey:"previewFolders") as? [String:String] ?? [:]
+                    folders[id] = url.path; self.defaults.set(folders,forKey:"previewFolders")
+                    self.emit("previewFolderChanged",["id":id])
+                }
+            } else if operation == "previews" { loadPreviews(id,requestID:requestID) }
+            else if let token = data["token"] as? String {
+                work.async {
+                    do {
+                        if self.client.usesHC { _ = try self.client.hc.resolve(id) }
+                        self.previewWork.async {
+                    do {
+                        let url = try self.previews.snapshot(agent:id,token:token)
+                        DispatchQueue.main.async {
+                            let configuration = NSWorkspace.OpenConfiguration()
+                            NSWorkspace.shared.open([url],withApplicationAt:URL(fileURLWithPath:"/System/Applications/Preview.app"),configuration:configuration) { _,error in
+                                if error != nil { DispatchQueue.main.async { self.emit("notice",["message":"Could not open this image in Preview."]) } }
+                            }
+                        }
+                    } catch { let message = error.localizedDescription; DispatchQueue.main.async { self.emit("notice",["message":message]) } }
+                    }
+                    } catch { let message = error.localizedDescription; DispatchQueue.main.async { self.emit("notice",["message":message]) } }
+                }
+            }
         case "badge": bubbleView.count = data["count"] as? Int ?? 0
         case "alertPreview":
             if !panelOpen && visible, let id = data["id"] as? String {
@@ -264,9 +299,32 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         default: break
         }
     }
+    func loadPreviews(_ id: String, requestID: String) {
+        let folder = (defaults.dictionary(forKey:"previewFolders") as? [String:String])?[id]
+        work.async {
+            var result: Row
+            do {
+                let row = self.client.usesHC ? try self.client.hc.resolve(id) : [:]
+                guard row.isEmpty || row["machine_id"] as? String == "local" else { throw HUDError("Previews are available for local agents only.") }
+                guard let path = folder ?? row["preview_directory"] as? String, path.hasPrefix("/") else { throw HUDError("Choose the agent’s local project or output folder.") }
+                self.previewWork.async {
+                    var gallery: Row
+                    do { gallery = try self.previews.list(agent:id,directory:URL(fileURLWithPath:path,isDirectory:true)) }
+                    catch { gallery = ["id":id,"items":[],"error":error.localizedDescription] }
+                    gallery["requestID"] = requestID
+                    let value = gallery
+                    DispatchQueue.main.async { self.emit("previews",value) }
+                }
+                return
+            } catch { result = ["id":id,"items":[],"error":error.localizedDescription] }
+            result["requestID"] = requestID
+            let value = result
+            DispatchQueue.main.async { self.emit("previews",value) }
+        }
+    }
     func webView(_ webView: WKWebView,decidePolicyFor navigationAction: WKNavigationAction,decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
-        decisionHandler(url.isFileURL && navigationAction.navigationType != .linkActivated ? .allow : .cancel)
+        decisionHandler(url.isFileURL && url.standardizedFileURL.path == HUDResources.root.appendingPathComponent("index.html").standardizedFileURL.path && navigationAction.navigationType != .linkActivated ? .allow : .cancel)
     }
     func showToast(_ data: Row) {
         hideToast()

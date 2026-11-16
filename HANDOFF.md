@@ -334,3 +334,29 @@ sending a prompt. The user confirmed Wispr Flow dictation works in the HUD.
 Swift tests passed (38 tests, one opt-in integration skipped, zero failures),
 along with 19 JavaScript tests and five Python tests. Fullscreen game focus
 remains unverified; window configuration tests do not establish that behavior.
+
+## macOS local image previews — November 16, 2026
+
+Previews beside Chat/Terminal shows up to 24 recent raster images in the local
+agent's current directory and its shallow `outputs` folder. hc uses foreground
+cwd rather than stale terminal metadata. Choose folder uses a native picker and
+stores a private per-agent override in the `previewFolders` defaults dictionary.
+No personal folders are embedded in source. Remote agents remain read only for
+this feature; the Windows host does not advertise the tab.
+
+Clicking opens a validated, read-only private copy with its original basename in
+Preview. Editing this copy does not change the project original. Browser messages
+carry opaque agent-scoped tokens, never file paths. Native discovery is limited
+to 600 entries, 48 decode attempts, 24 thumbnails, 24 MB per file and 100 million
+pixels; it runs off the prompt transport queue. Network volumes, symlinks,
+non-raster types, changed files and stale/foreign tokens are rejected. The copy
+cache is bounded to 96 files/192 MB per HUD run and removed on normal shutdown.
+Request IDs discard delayed gallery results. Folder picker and gallery changes
+preserve composer drafts and reuse existing focus behavior.
+
+The shared Codex parser also removes the idle “Ask Codex to do anything” composer
+and its wrapped GPT/cwd/shortcut footer from Chat instead of inventing a large
+YOU card. Submitted messages and fenced examples remain visible. Native prompt
+and hc identity/readiness/uncertain-delivery logic is unchanged.
+
+Local macOS acceptance: installed bundle signature verified; Previews rendered 24 recent images after choosing the project outputs folder, and clicking a thumbnail opened its matching read-only copy in Preview. Draft text survived switching to Previews; test text was cleared without sending. Chat no longer shows the idle Codex placeholder card. Initial automatic folder discovery stayed loading for this session; the saved native folder selection worked.

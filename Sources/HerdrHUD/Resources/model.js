@@ -7,8 +7,24 @@
   function parse(text,provider){
     let model='',reasoning='',lines=text.trimEnd().split('\n');
     if(provider!=='codex')return {text,model,reasoning,blocks:[]};
-    const footer=/^\s*(gpt-[\w.-]+|o[134](?:-[\w.-]+)?|codex-[\w.-]+)(?:\s+(minimal|low|medium|high|xhigh|max|ultra))?\s+[·|]\s*.+$/.exec(lines.at(-1)||'');
-    if(footer){for(let i=lines.length-2;i>=Math.max(0,lines.length-14);i--){if(/^\s*[›❯»](?:\s|$)/.test(lines[i])){model=footer[1];reasoning=footer[2]||'';lines=lines.slice(0,i);break;}if(lines[i].trim()&&(!lines[i].startsWith('  ')||/^\s*•/.test(lines[i])))break;}}
+    // Codex's live composer is terminal chrome, not a submitted user message.
+    // Newer versions wrap the model/path and add shortcut/warning rows beneath it.
+    for(let end=lines.length-1;end>=Math.max(0,lines.length-10);end--){
+      const footer=/^\s*(gpt-[\w.-]+|o[134](?:-[\w.-]+)?|codex-[\w.-]+)(?:\s+(minimal|low|medium|high|xhigh|max|ultra))?\s+[·|]\s*.+$/i.exec(lines[end]);
+      if(!footer)continue;
+      const suffix=lines.slice(end+1);
+      if(suffix.some(line=>line.trim()&&(!line.startsWith('  ')||/^\s*[›❯»•●`]/.test(line))))continue;
+      for(let i=end-1;i>=Math.max(0,end-14);i--){
+        if(/^\s*[›❯»](?:\s|$)/.test(lines[i])){
+          // A code sample may legitimately contain a prompt and model footer.
+          const fences=lines.slice(0,i).filter(line=>line.trimStart().startsWith('```')).length;
+          if(fences%2)break;
+          model=footer[1];reasoning=(footer[2]||'').toLowerCase();lines=lines.slice(0,i);break;
+        }
+        if(lines[i].trim()&&(!lines[i].startsWith('  ')||/^\s*[•●`]/.test(lines[i])))break;
+      }
+      if(model)break;
+    }
     let kind='context',body=[],fenced=false,blocks=[];
     const flush=()=>{const text=body.join('\n').trim();if(text)blocks.push({kind,text});body=[];};
     for(const line of lines){const marker=!fenced&&/^([›❯»•●])(?: |$)(.*)/.exec(line),status=!fenced&&/^[─━]+ (Worked for .+|Conversation recap.*)/.exec(line);
