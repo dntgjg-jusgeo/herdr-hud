@@ -504,3 +504,27 @@ Native linked Codex sessions offer expected-turn steering separately from queuei
 No error falls back to terminal input or a different turn. UI intent persists before
 request dispatch, and unknown writes retain both the draft and uncertainty block.
 All transport verification must use fake or isolated sessions, never user agents.
+
+## OrcaRouter through OpenCode and notification excerpts — November 16, 2026
+
+The macOS Orca models panel fetches the authenticated fixed-origin catalog and
+intersects it with bundled primary-source release evidence. The four-calendar-month
+cutoff is rolling; unknown/future dates, native Anthropic/OpenAI families, automatic
+routers and unsupported chat endpoints are hidden. Selecting is inert; explicit
+launch refreshes eligibility and opens a project picker.
+
+OrcaSessionLauncher creates dedicated local OpenCode 2.1.4 server/TUI terminals.
+Private nonsecret descriptors bind core/terminal incarnations, foreground PIDs,
+listener ownership, exact session ID and model. A Python exec wrapper retrieves
+Keychain credentials after HC launch; secrets never enter HC metadata or argv.
+A unique custom provider avoids OpenCode's built-in Orca catalog merging. The
+adapter verifies exactly one available model and provider, correct endpoint/package,
+and exact directory before create/send. OpenCode accepts unknown model metadata,
+but its resolver fails unavailable IDs; the HUD refuses drift and never falls back.
+Existing permission policies remain inherited. Native text/image acknowledgement
+and uncertainty guards apply; unknown/unmanaged OpenCode stays read-only.
+
+Notification excerpts now retain opening sentences or end at a word boundary.
+Native font measurement shortens any remaining overflow before drawing. A separate
+Click to read full reply footer keeps the full chat accessible. No model call is
+made to summarize notifications.

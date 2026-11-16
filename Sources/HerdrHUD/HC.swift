@@ -55,9 +55,10 @@ final class HCClient {
         if ["node", "nodejs"].contains(executable), args.count > 1, !args[1].hasPrefix("-") {
             entry = URL(fileURLWithPath:args[1]).lastPathComponent.lowercased();entryIndex = 1
         }
-        for provider in ["claude", "codex"] {
+        for provider in ["claude", "codex", "opencode"] {
             if entry == provider || entry == provider + ".js" {
                 if provider == "codex", args.count > entryIndex+1, ["app-server","remote-control","exec-server"].contains(args[entryIndex+1]) { return nil }
+                if provider == "opencode", args.count > entryIndex+1, ["serve","service","api","run","acp","models","auth","debug","reload","plugin","session","stats","pair","upgrade","update","uninstall"].contains(args[entryIndex+1]) { return nil }
                 return provider
             }
         }
@@ -81,14 +82,16 @@ final class HCClient {
         let labels = terminal["labels"] as? [String:String] ?? [:]
         let status = terminal["status"] as? Row ?? [:]
         let app = status["app"] as? String ?? ""
-        let reportedByProvider = provider == "claude" ? ["claude", "claude-code"].contains(app) : app == "codex"
+        // OpenCode has no verified OSC status producer. Only the managed native
+        // adapter may enrich its rows after exact server/session verification.
+        let reportedByProvider = provider == "claude" ? ["claude", "claude-code"].contains(app) : provider == "codex" && app == "codex"
         let state = reportedByProvider ? status["state"] as? String ?? "unknown" : "unknown"
         let identity: Row = ["core":core,"remote":remoteIdentity,"created_ms":created,"pid":pid,"provider":provider,"app":app]
         let cwd = foreground["cwd"] as? String ?? terminal["cwd"] as? String ?? ""
         let location = labels["where"]?.components(separatedBy:" / ")
         let workspace = labels["workspace"] ?? location?.first ?? URL(fileURLWithPath:cwd).lastPathComponent
         let tab = location?.dropFirst().joined(separator:" / ") ?? terminal["title"] as? String ?? address
-        let title = terminal["name"] as? String ?? labels["name"] ?? (tab + " · " + (provider == "claude" ? "Claude" : "Codex"))
+        let title = terminal["name"] as? String ?? labels["name"] ?? (tab + " · " + (provider == "claude" ? "Claude" : provider == "codex" ? "Codex" : "OpenCode"))
         var row: Row = ["pane_id":address,"terminal_id":address,"agent_session":identity,"agent":provider,
                        "can_prompt":state == "idle", "can_attach":machineID == "local", "input_kind":status["kind"] as? String ?? "",
                        "agent_status":["idle","working","done","blocked","error"].contains(state) ? state : "unknown",

@@ -3,6 +3,7 @@ const $=id=>document.getElementById(id);
 const post=data=>window.webkit?.messageHandlers?.hud ? window.webkit.messageHandlers.hud.postMessage(data) : window.chrome.webview.postMessage(data);
 if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event=>window.receive(event.data));
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
+let orcaSupported=false,orcaOpen=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
 let supportsAttachments=false,attachments=new Map(),attachmentLoads=new Map(),attachmentSequence=0,pendingAttachmentBytes=0;
 let supportsPreviews=false,previewMode=false,previewRequestID='';
 let supportsTerminalControls=false,terminalKeyRequests=new Map(),terminalKeyUncertain=new Set(),terminalScreenRendered='',terminalScreenAgent='';
@@ -14,6 +15,20 @@ let queues=new Map(),queueSaving=false,queueHolds=new Map(),queuePaused=new Set(
 let supportsDrafts=false,draftsLoaded=true,draftLabels=new Map(),draftTouched=new Set(),draftPersistence=null,storageRequests=new Map(),storageFailed=false,pendingDraftPrompt=new Set(),pendingDraftKeys=new Set();
 let baseline=false,unread=new Set(),drafts=new Map(),outputs=new Map(),since=new Map(),uncertain=new Set(),promptByRequest=new Map();
 function request(op,extra={}){const requestID=`${Date.now()}-${++requestSequence}`;post({op,requestID,...extra});return requestID;}
+function renderOrcaPicker(rebuild=false){
+  $('orca-toggle').hidden=!orcaSupported;$('orca-toggle').setAttribute('aria-expanded',String(orcaOpen));$('orca-panel').hidden=!orcaSupported||!orcaOpen;
+  $('orca-refresh').disabled=!!orcaCatalogRequest||orcaBusy;$('orca-search').disabled=orcaBusy;$('orca-select').disabled=orcaBusy||!!orcaCatalogRequest;
+  if(rebuild){const visible=window.HUDOrcaModels?.search(orcaModels,$('orca-search').value)||[];const options=[el('option',visible.length?'Choose a model…':'No matching eligible models')];options[0].value='';for(const model of visible){const option=el('option',`${model.name||model.id} · ${model.releaseDate}`);option.value=model.id;options.push(option);}if(!visible.some(x=>x.id===orcaChosen))orcaChosen='';$('orca-select').replaceChildren(...options);$('orca-select').value=orcaChosen;}
+  $('orca-launch').disabled=orcaBusy||!!orcaCatalogRequest||!orcaModels.some(x=>x.id===orcaChosen);
+  $('orca-detail').textContent=window.HUDOrcaModels?.detail(orcaModels.find(x=>x.id===orcaChosen))||'';
+}
+function loadOrcaModels(){if(!orcaSupported||orcaBusy||orcaCatalogRequest)return;orcaCatalogRequest=request('orcaModels');$('orca-status').textContent='Loading your eligible OrcaRouter models…';renderOrcaPicker();}
+$('orca-toggle').onclick=()=>{orcaOpen=!orcaOpen;renderOrcaPicker();if(orcaOpen&&!orcaModels.length)loadOrcaModels();};
+$('orca-close').onclick=()=>{orcaOpen=false;renderOrcaPicker();};
+$('orca-refresh').onclick=loadOrcaModels;
+$('orca-search').oninput=()=>renderOrcaPicker(true);
+$('orca-select').onchange=()=>{orcaChosen=$('orca-select').value;renderOrcaPicker();};
+$('orca-launch').onclick=()=>{if($('orca-launch').disabled)return;orcaBusy=true;orcaLaunchRequest=request('orcaLaunch',{model:orcaChosen});$('orca-status').textContent='Choose the project folder for this new OpenCode chat.';renderOrcaPicker();};
 function active(){const a=agents.find(a=>a.id===selected);if(a||!selected.startsWith('shepherdr:'))return a;const r=linked(selected);return r&&{id:r.view_id,online:true,agent_status:'readonly',agent:'shepherdr',workspace_label:r.space||r.title,machine_label:r.machine};}
 function statusLabel(a){return window.HUDUtilities?.status(a,completed.has(a?.id))||a?.agent_status||'Unknown';}
 function atBottom(){return window.HUDUtilities?.nearBottom($('output'))??true;}
@@ -49,7 +64,7 @@ function select(id){
   lastOutput=outputs.get(id)?.text||'';queuedOutput.delete(id);unread.delete(id);badge();if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();if(supportsNativeApprovals)request('nativeApprovals',{id});
 }
 function queueFor(id){return queues.get(id)||[];}
-function canQueue(a){return !!(supportsDrafts&&window.HUDFollowups&&a?.online&&['codex','claude'].includes(a.agent)&&['working','idle','done'].includes(a.agent_status));}
+function canQueue(a){return !!(supportsDrafts&&window.HUDFollowups&&a?.online&&['codex','claude','opencode'].includes(a.agent)&&['working','idle','done'].includes(a.agent_status));}
 function steerState(a){const s=nativeApprovalStates.get(a?.id);return a?.agent_status==='working'&&s?.canSteer&&!s.steerUncertain?s:null;}
 function renderHeader(){
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
@@ -196,7 +211,7 @@ function renderPreviews(data){
   }));
 }
 function imagesFor(id){return attachments.get(id)||[];}
-function canAttach(a=active()){return supportsAttachments&&a?.can_attach===true&&a.online&&['claude','codex'].includes(a.agent);}
+function canAttach(a=active()){return supportsAttachments&&a?.can_attach===true&&a.online&&['claude','codex','opencode'].includes(a.agent);}
 function closeAttachmentPreview(restore=true){
   if(!attachmentPreview)return;
   const key=attachmentPreview.key;attachmentPreview=null;$('attachment-preview').close();
@@ -223,7 +238,7 @@ function renderAttachments(){
   }));
 }
 async function stageImages(files){
-  if(!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Images are available for local hc Claude and Codex agents.');return;}
+  if(!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Images are available for local Claude, Codex, and managed OpenCode chats.');return;}
   const id=selected,list=Array.from(files),count=imagesFor(id).length+(attachmentLoads.get(id)||0);
   const stagedBytes=[...attachments.values(),...[...queues.values()].flat().map(item=>item.images)].flat().reduce((n,item)=>n+item.bytes,0)+pendingAttachmentBytes;
   if(!list.length)return;
@@ -326,12 +341,20 @@ function sendPrompt(id,message,images,options={}){
   beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
 }
 window.receive=({type,data})=>{
-  if(type==='roster'){
+  if(type==='openOrcaModels'){orcaOpen=true;renderOrcaPicker();loadOrcaModels();}else if(type==='orcaModels'){
+    if(data.requestID!==orcaCatalogRequest)return;orcaCatalogRequest='';
+    if(data.error){orcaModels=[];orcaChosen='';$('orca-status').textContent=data.error;}
+    else{orcaModels=data.models||[];$('orca-policy').textContent=`Released since ${data.cutoffDate} · Claude/OpenAI and automatic routers excluded · Unknown dates hidden`;$('orca-status').textContent=orcaModels.length?`${orcaModels.length} eligible models. Choose one, then click Open new OpenCode chat.`:'No models currently meet your provider and verified-release-date filters.';}
+    renderOrcaPicker(true);
+  }else if(type==='orcaLaunch'){
+    if(data.requestID!==orcaLaunchRequest)return;orcaLaunchRequest='';orcaBusy=false;
+    $('orca-status').textContent=data.error|| (data.cancelled?'No chat opened.':'OpenCode chat opened in Herdr.');renderOrcaPicker();if(!data.error&&!data.cancelled)request('refresh');
+  }else if(type==='roster'){
     const before=agents;agents=data.agents||[];observeQueueCycles();shepherdr=data.shepherdr||(rosterMode==='shepherdr'?shepherdr:null);
     if(baseline)for(const a of agents){const old=before.find(b=>b.id===a.id);if(old&&a.online&&old.online&&old.agent_status==='working'&&['idle','done'].includes(a.agent_status)){completed.add(a.id);unread.add(a.id);}if(a.agent_status==='working')completed.delete(a.id);if(old&&a.agent_status==='blocked'&&old.agent_status!=='blocked')unread.add(a.id);}
     const updates=baseline?HUDModel.alerts(before,agents):[];baseline=true;
     for(const a of agents){if(a.agent_status==='working'&&!since.has(a.id))since.set(a.id,Date.now());if(a.agent_status!=='working')since.delete(a.id);}
-    for(const a of agents)draftLabels.set(a.id,label(a));
+    for(const a of agents){draftLabels.set(a.id,label(a));if(a.orca_uncertain){uncertain.add(a.id);draftChanged();}}
     const valid=new Set(agents.map(a=>a.id));unread=new Set([...unread].filter(id=>valid.has(id)));
     if(updates.length&&!opened){const a=updates[0];request('alertPreview',{id:a.id,title:label(a)+(a.agent_status==='blocked'?' needs input':' finished')});}
     $('machines').replaceChildren(...(data.machines||[]).map(m=>{const node=el('span',undefined,'machine');node.append(el('span',undefined,'dot '+(m.online?'online':'')),document.createTextNode(`${m.label} · ${m.online?`${m.count} agents`:'offline'}`));node.title=m.error||'';return node;}));
@@ -340,7 +363,7 @@ window.receive=({type,data})=>{
   }else if(type==='visibility'){opened=data.open;if(opened){renderHeader();read();}}
   else if(type==='resetBaseline'){baseline=false;}
   else if(type==='select'){select(data.id);}
-  else if(type==='alertPreview'){if(!opened){const parsed=HUDModel.parse(data.text,data.provider),reply=parsed.blocks.filter(x=>x.kind==='reply').at(-1)?.text||'';post({op:'alert',id:data.id,title:data.title,preview:reply.replace(/\s+/g,' ').slice(0,200)||'Click to read the latest output'});}}
+  else if(type==='alertPreview'){if(!opened){const parsed=HUDModel.parse(data.text,data.provider),reply=parsed.blocks.filter(x=>x.kind==='reply').at(-1)?.text||'';post({op:'alert',id:data.id,title:data.title,preview:HUDModel.notificationPreview(reply)});}}
   else if(type==='output'){
     reading=false;if(data.error){if(data.id===selected)notice(data.error);return;}
     outputs.set(data.id,data);if(data.id!==selected){read();return;}
@@ -362,11 +385,11 @@ window.receive=({type,data})=>{
   }else if(type==='previewFolderChanged'){if(data.id===selected&&previewMode)loadPreviews();
   }else if(type==='previews'){renderPreviews(data);
   }else if(type==='nativeApprovals'){if(typeof data.id==='string'){nativeApprovalStates.set(data.id,data);if(data.steerUncertain){uncertain.add(data.id);draftChanged();}if(data.id===selected){renderHeader();}}}
-  else if(type==='nativeSteerReconcile'){const id=steerReconcileRequests.get(data.requestID);if(!id)return;steerReconcileRequests.delete(data.requestID);if(data.error)notice(data.error);else{uncertain.delete(id);draftChanged();notice('');}renderHeader();}
+  else if(type==='nativeSteerReconcile'||type==='orcaReconcile'){const id=steerReconcileRequests.get(data.requestID);if(!id)return;steerReconcileRequests.delete(data.requestID);if(data.error)notice(data.error);else{uncertain.delete(id);draftChanged();notice('');}renderHeader();}
   else if(type==='nativeApprovalResponse'){const pending=nativeApprovalRequests.get(data.requestID);if(!pending)return;nativeApprovalRequests.delete(data.requestID);nativeApprovalsBusy.delete(pending.token);if(data.error)notice(data.error);renderNativeApprovals();}
   else if(type==='newCodexProgress'){$('new-codex-status').textContent=data.message||'Complete startup in Herdr.';}
   else if(type==='newCodexSession'){newCodexBusy=false;$('new-codex-start').disabled=false;$('new-codex-cancel').disabled=false;if(data.error){$('new-codex-status').textContent=data.error;}else if(data.cancelled){$('new-codex-status').textContent='Choose its project folder to start.';}else{$('new-codex-dialog').close();request('refresh');if(data.id)select(data.id);}}
-  else if(type==='preferences'){supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
   else if(type==='quickPrompts'){quickPrompts=data.prompts;renderQuickPrompts();}
   else if(type==='loadDrafts'){restoreDrafts(data);}
   else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}
@@ -375,7 +398,7 @@ window.receive=({type,data})=>{
 window.handleEscape=()=>{if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();window.handleEscape();}});
 $('refresh').onclick=()=>request('refresh');$('close').onclick=()=>request('close');$('hide').onclick=()=>request('hide');$('send').onclick=send;
-$('reconcile').onclick=()=>{if(nativeApprovalStates.get(selected)?.steerUncertain){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('nativeSteerReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}uncertain.delete(selected);draftChanged();notice('');renderHeader();};
+$('reconcile').onclick=()=>{if(active()?.orca_managed){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('orcaReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}if(nativeApprovalStates.get(selected)?.steerUncertain){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('nativeSteerReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}uncertain.delete(selected);draftChanged();notice('');renderHeader();};
 $('search').oninput=()=>{filter=$('search').value.toLowerCase();renderRoster();};
 $('prompt').oninput=()=>{drafts.set(selected,$('prompt').value);draftChanged();renderHeader();};
 $('prompt').onkeydown=e=>{

@@ -73,5 +73,17 @@
     }
     return rows;
   }
-  const api={sorted,alerts,parse,identity,shepherdrRows};if(typeof module!=='undefined')module.exports=api;else root.HUDModel=api;
+  // A local extractive preview: keep the opening outcome, never invent a summary.
+  function notificationPreview(text,limit=150){
+    const clean=String(text||'').replace(/```[\s\S]*?```/g,' ').replace(/!\[[^\]]*\]\([^)]*\)/g,' ')
+      .replace(/\[([^\]]+)\]\([^)]*\)/g,'$1').replace(/^\s*(?:#{1,6}\s+|[-*•]\s+|\d+[.)]\s+)/gm,'')
+      .replace(/[*`_]/g,'').replace(/\s+/g,' ').trim();
+    if(!clean)return 'Open the chat to read the latest output.';
+    if(clean.length<=limit)return clean;
+    let summary='';for(const boundary of clean.matchAll(/[.!?](?=\s|$)/g)){const end=boundary.index+1;if(end>limit)break;summary=clean.slice(0,end);}
+    if(summary.length>=35)return summary;
+    const prefix=clean.slice(0,limit-1),space=prefix.lastIndexOf(' ');
+    return prefix.slice(0,space>limit/2?space:prefix.length).replace(/[,:;\s]+$/,'')+'…';
+  }
+  const api={notificationPreview,sorted,alerts,parse,identity,shepherdrRows};if(typeof module!=='undefined')module.exports=api;else root.HUDModel=api;
 })(globalThis);

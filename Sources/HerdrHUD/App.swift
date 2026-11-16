@@ -61,6 +61,12 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     let defaults = UserDefaults.standard
     let previews = PreviewGallery()
     let fileLinks = FileLinks(), draftStore = DraftStore()
+    let orcaModels = OrcaModels(), orcaCatalogWork = DispatchQueue(label:"herdr-hud.orca-catalog",qos:.userInitiated)
+    var orcaLaunching = false
+    var orcaUncertain = Set<String>() // work queue only; survives adapter recreation
+    lazy var orcaLauncher = OrcaSessionLauncher(client:client.hc,opencode:NSHomeDirectory()+"/.opencode/bin/opencode",onTerminalCreated:{ address in
+        _ = try? ProcessRunner(timeout:5).run(Invocation(executable:NSHomeDirectory()+"/.local/bin/herdr-app",arguments:["do","terminal.keep","--terminal",address],mutation:true))
+    })
     // Access only on work queue. A durable queue item is attempted once per HUD run.
     var queuedPromptClaims = Set<String>()
     lazy var codexLauncher = CodexSessionLauncher(client:client.hc,codex:NSHomeDirectory()+"/.local/bin/codex",onTerminalCreated:{ [weak self] address in
@@ -257,7 +263,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     @objc func refresh() {
         guard visible, !polling else { return }; polling = true
         let mode = rosterMode
-        work.async { var data = self.client.snapshot(); if mode == "shepherdr" { data["shepherdr"] = self.shepherdr.overlay(agents:data["agents"] as? [Row] ?? []) }; DispatchQueue.main.async {
+        work.async { var data = self.client.snapshot(); self.decorateOrcaSnapshot(&data); if mode == "shepherdr" { data["shepherdr"] = self.shepherdr.overlay(agents:data["agents"] as? [Row] ?? []) }; DispatchQueue.main.async {
             self.polling = false; self.lastSnapshot = data;
             let online = Set((data["agents"] as? [Row] ?? []).filter { $0["online"] as? Bool == true }.compactMap { $0["id"] as? String })
             for id in Array(self.codexApprovals.keys) where !online.contains(id) { self.stopCodexApprovals(id,status:"This terminal is no longer available.") }
@@ -269,7 +275,46 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+            if CommandLine.arguments.contains("--orca-models") {openPanel();emit("openOrcaModels",[:])}
+        case "orcaModels":
+            guard client.usesHC,panelOpen,!requestID.isEmpty else { emit(operation,["requestID":requestID,"error":"Open the HUD to load OrcaRouter models."]);return }
+            orcaCatalogWork.async {
+                var result:Row
+                do { result = try self.orcaModels.catalog() } catch { result = ["error":error.localizedDescription] }
+                result["requestID"]=requestID;let value=result
+                DispatchQueue.main.async { self.emit(operation,value) }
+            }
+        case "orcaLaunch":
+            guard client.usesHC,panelOpen,!orcaLaunching,!requestID.isEmpty,let modelID=data["model"] as? String else { emit(operation,["requestID":requestID,"error":"Open the model picker and select a model."]);return }
+            guard !promptIDs.contains(requestID) else { return };promptIDs.insert(requestID);orcaLaunching=true
+            orcaCatalogWork.async {
+                do {
+                    let catalog=try self.orcaModels.catalog()
+                    guard let models=catalog["models"] as? [Row],let model=models.first(where:{$0["id"] as? String == modelID}) else { throw HUDError("This model no longer meets your catalog filters. Refresh the list.") }
+                    DispatchQueue.main.async {
+                        guard self.panelOpen else {self.orcaLaunching=false;self.emit(operation,["requestID":requestID,"cancelled":true]);return}
+                        let picker=NSOpenPanel();picker.canChooseFiles=false;picker.canChooseDirectories=true;picker.allowsMultipleSelection=false;picker.prompt="Open OpenCode";picker.message="Choose the project folder for this new OrcaRouter OpenCode chat."
+                        picker.begin { response in
+                            guard response == .OK,let url=picker.url else {self.orcaLaunching=false;self.emit(operation,["requestID":requestID,"cancelled":true]);return}
+                            self.work.async {
+                                var result:Row
+                                do {result=try self.orcaLauncher.launch(directory:url.path,model:model)}catch{result=["error":error.localizedDescription]}
+                                result["requestID"]=requestID;let value=result
+                                DispatchQueue.main.async{self.orcaLaunching=false;self.emit(operation,value);self.refresh()}
+                            }
+                        }
+                    }
+                } catch {let message=error.localizedDescription;DispatchQueue.main.async{self.orcaLaunching=false;self.emit(operation,["requestID":requestID,"error":message])}}
+            }
+        case "orcaReconcile":
+            guard client.usesHC,panelOpen,let id=data["id"] as? String,id==selected,!requestID.isEmpty else {emit(operation,["requestID":requestID,"error":"Select the same OpenCode chat before reconciling."]);return}
+            work.async {
+                var result:Row=["id":id,"requestID":requestID]
+                do {let row=try self.client.hc.resolve(id);guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("This OpenCode session is not managed by the HUD.")};_=try adapter.reconcile();self.orcaUncertain.remove(id);result["ok"]=true}
+                catch {result["error"]=error.localizedDescription};let value=result
+                DispatchQueue.main.async{self.emit(operation,value);self.refresh()}
+            }
         case "nativeApprovals":
             guard client.usesHC,panelOpen,let id=data["id"] as? String else { return }
             syncCodexApprovals(id,reconnect:data["reconnect"] as? Bool == true)
@@ -437,9 +482,17 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                         let claim = encode([id,data["queueToken"] as? String ?? ""])
                         guard self.queuedPromptClaims.insert(claim).inserted else { throw HUDError("Queued delivery was already attempted. Inspect Herdr; it will not be retried.") }
                     }
-                    result = operation == "output" ? (id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)) : try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])
+                    if operation == "output" {result = id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)}
+                    else if self.client.usesHC {
+                        let row=try self.client.hc.resolve(id)
+                        if row["agent"] as? String == "opencode" {
+                            guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("This OpenCode session is not managed by the HUD.")}
+                            guard !self.orcaUncertain.contains(id) else {throw HUDError("OpenCode delivery uncertain. Inspect Herdr before sending again.")}
+                            result=try adapter.prompt(text:data["message"] as? String ?? "",attachments:ImageAttachment.parse(data["attachments"]));result["id"]=id
+                        }else{result=try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])}
+                    } else {result=try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])}
                 }
-                catch { result = ["error":error.localizedDescription, "id":id] }
+                catch {let unknown=(error as? OrcaOpenCode.Failure)?.uncertain ?? false;if unknown{self.orcaUncertain.insert(id)};result = ["error":error.localizedDescription, "id":id,"uncertain":unknown] }
                 if operation == "output", result["error"] == nil, self.client.usesHC,
                    let row=self.client.hc.bindings[id],row["machine_id"] as? String == "local",let directory=row["preview_directory"] as? String {
                     result["files"]=self.fileLinks.discover(agent:id,output:result["text"] as? String ?? "",directory:directory)
@@ -450,6 +503,22 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             }
         default: break
         }
+    }
+    func decorateOrcaSnapshot(_ data:inout Row) {
+        guard client.usesHC,var rows=data["agents"] as? [Row] else{return}
+        for index in rows.indices where rows[index]["agent"] as? String == "opencode" {
+            do {
+                guard let adapter=try orcaLauncher.adapter(for:rows[index]) else{continue}
+                let state=try adapter.snapshot()
+                rows[index]["agent_status"]=state["agent_status"];rows[index]["input_kind"]=state["input_kind"]
+                let id=rows[index]["id"] as? String ?? ""
+                if state["uncertain"] as? Bool == true{orcaUncertain.insert(id)}
+                rows[index]["can_prompt"]=(state["canPrompt"] as? Bool == true) && !orcaUncertain.contains(id);rows[index]["can_attach"]=true
+                rows[index]["orca_managed"]=true;rows[index]["orca_uncertain"]=orcaUncertain.contains(id)
+                rows[index]["orca_model"]=state["modelID"]
+            }catch{rows[index]["agent_status"]="unknown";rows[index]["can_prompt"]=false;rows[index]["orca_error"]=error.localizedDescription}
+        }
+        data["agents"]=rows
     }
     func performNativeSteer(id:String,turn:String,message:String,attachments:Any?,requestID:String) {
         let epoch=codexApprovalEpochs[id],fingerprint=codexApprovalBindings[id]
@@ -576,10 +645,10 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     }
     func showToast(_ data: Row) {
         hideToast()
-        let window = NSPanel(contentRect:NSRect(x:0,y:0,width:320,height:92),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+        let window = NSPanel(contentRect:NSRect(x:0,y:0,width:320,height:124),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         configure(window); window.title = "Herdr HUD Alert"
         window.level = NSWindow.Level(rawValue:bubble.level.rawValue+1)
-        let view = ToastView(frame:NSRect(x:0,y:0,width:320,height:92)); view.app = self; view.agentID = data["id"] as? String ?? ""
+        let view = ToastView(frame:NSRect(x:0,y:0,width:320,height:124)); view.app = self; view.agentID = data["id"] as? String ?? ""
         view.title = data["title"] as? String ?? "Agent update"; view.detail = data["preview"] as? String ?? "Click to read the response"
         window.contentView = view
         toast = window; positionToast(); window.orderFrontRegardless()
@@ -598,13 +667,14 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     @objc func control(_ notification: Notification) {
         switch notification.object as? String {
         case "open": openPanel()
+        case "orca-models": openPanel();emit("openOrcaModels",[:])
         case "close": closePanel()
         case "toggle": togglePanel()
         case "hide": if visible { toggleVisibility() }
         case "show": if !visible { toggleVisibility() }
         case "preview-alert":
             let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            showToast(["id":defaults.string(forKey:"selectedAgent") ?? "","title":"Notification preview","preview":"Notifications follow H and stay clear of the button."])
+            showToast(["id":defaults.string(forKey:"selectedAgent") ?? "","title":"Notification preview","preview":"Implemented the card stack and arrow navigation. New captures join the stack, and clicking a thumbnail opens the full image. This longer notification demonstrates clean word boundaries without clipping the last line."])
             DispatchQueue.main.asyncAfter(deadline:.now()+0.25) {
                 guard let toast = self.toast else { return }
                 let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly,kCGNullWindowID) as? [Row] ?? []
@@ -647,8 +717,11 @@ final class ToastView: NSView {
     override func mouseUp(with event:NSEvent) { if convert(event.locationInWindow,from:nil).x > bounds.width-35 { app?.hideToast() } else { let id = agentID; app?.openPanel(); app?.emit("select",["id":id]) } }
     override func draw(_ dirtyRect:NSRect) {
         NSColor(calibratedWhite:0.10,alpha:0.98).setFill(); NSBezierPath(roundedRect:bounds,xRadius:14,yRadius:14).fill()
-        (title as NSString).draw(in:NSRect(x:16,y:50,width:270,height:26),withAttributes:[.font:NSFont.systemFont(ofSize:13,weight:.semibold),.foregroundColor:NSColor.systemGreen])
-        (detail as NSString).draw(in:NSRect(x:16,y:12,width:282,height:36),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:NSColor.white])
-        ("×" as NSString).draw(at:NSPoint(x:296,y:65),withAttributes:[.font:NSFont.systemFont(ofSize:18),.foregroundColor:NSColor.gray])
+        let heading=NSMutableParagraphStyle();heading.lineBreakMode = .byTruncatingTail
+        (title as NSString).draw(in:NSRect(x:16,y:91,width:270,height:18),withAttributes:[.font:NSFont.systemFont(ofSize:13,weight:.semibold),.foregroundColor:NSColor.systemGreen,.paragraphStyle:heading])
+        let font=NSFont.systemFont(ofSize:12),body=ToastPreview.fitted(detail,font:font,width:282,height:46)
+        (body as NSString).draw(in:NSRect(x:16,y:40,width:282,height:46),withAttributes:[.font:font,.foregroundColor:NSColor.white])
+        ("Click to read full reply" as NSString).draw(at:NSPoint(x:16,y:15),withAttributes:[.font:NSFont.systemFont(ofSize:11),.foregroundColor:NSColor.lightGray])
+        ("×" as NSString).draw(at:NSPoint(x:296,y:94),withAttributes:[.font:NSFont.systemFont(ofSize:18),.foregroundColor:NSColor.gray])
     }
 }

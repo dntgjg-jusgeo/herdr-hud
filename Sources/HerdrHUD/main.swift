@@ -1,5 +1,10 @@
 import AppKit
-if CommandLine.arguments.contains("--roster") {
+if CommandLine.arguments.contains("--orca-models") {
+    let identifier = Bundle.main.bundleIdentifier ?? "org.herdr.community.hud"
+    let existing = NSRunningApplication.runningApplications(withBundleIdentifier:identifier).filter{$0.processIdentifier != ProcessInfo.processInfo.processIdentifier}
+    if !existing.isEmpty {DistributedNotificationCenter.default().postNotificationName(HUDApp.channel,object:"orca-models",userInfo:nil,deliverImmediately:true)}
+    else {let app=NSApplication.shared;let delegate=HUDApp();app.delegate=delegate;app.run()}
+} else if CommandLine.arguments.contains("--roster") {
     var roster = HerdrClient().snapshot()
     if CommandLine.arguments.contains("--shepherdr") { roster["shepherdr"] = ShepherdrClient().overlay(agents:roster["agents"] as? [Row] ?? []) }
     print(encode(roster))

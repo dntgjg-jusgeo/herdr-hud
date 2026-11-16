@@ -57,7 +57,7 @@ function queueHarness(provider='claude'){
  h.window.receive({type:'preferences',data:{draftsSupported:true}});h.window.receive({type:'loadDrafts',data:{snapshot:{version:1,drafts:[]}}});return h;
 }
 function rosterState(h,state,id='A'){h.window.receive({type:'roster',data:{agents:[{id,online:true,agent:'claude',agent_status:state,can_prompt:state==='idle'}],machines:[]}});}
-for(const provider of ['claude','codex'])test(`${provider}: accepts multiple saved prompts while working, delivers FIFO only when ready`,async()=>{
+for(const provider of ['claude','codex','opencode'])test(`${provider}: accepts multiple saved prompts while working, delivers FIFO only when ready`,async()=>{
  const h=queueHarness(provider);
  for(const text of ['First follow-up','Second follow-up']){h.$('prompt').value=text;h.$('prompt').oninput();assert.equal(h.$('send').disabled,false);assert.match(h.$('send').textContent,/Queue/);h.run('send()');assert.equal(h.$('prompt').value,'');await saveAcks(h);assert.equal(h.$('prompt').value,'');}
  assert.equal(h.run("queueFor('A').length"),2);assert.equal(h.messages.some(x=>x.op==='prompt'||x.op==='queuedPrompt'),false);

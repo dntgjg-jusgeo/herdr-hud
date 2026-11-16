@@ -130,6 +130,32 @@ If that mode is unavailable, **Queue prompt**
 remains available. Queued terminal prompts start after the current task finishes;
 they do not steer it mid-task.
 
+### OrcaRouter models through OpenCode
+
+On macOS, **Orca models** opens a searchable, collapsible model picker. Select a
+model, click **Open new OpenCode chat…**, then choose its project folder. Changing
+the dropdown alone does not launch anything or change an existing chat.
+
+The picker intersects OrcaRouter’s live catalog with verified release dates and
+OpenAI-compatible chat support. It excludes Anthropic/Claude, OpenAI/GPT/Codex,
+automatic routers, models older than four calendar months, future releases and
+models without a verified release date. Refresh updates availability and the
+rolling cutoff; the bundled release registry must be updated to admit newly
+dated models.
+
+Managed sessions use OpenCode 2.1.4 with a dedicated authenticated loopback server
+and one eligible model per session. Credentials come from the existing macOS
+Keychain item `ORCAROUTER_AUTH_TOKEN`; they are not stored in launch arguments or
+session files. The feature requires a local OpenCode installation, Python 3 and
+that existing account credential. It does not change Claude’s provider or default.
+
+The HUD supports text, image attachments and durable follow-up queues for these
+managed sessions through OpenCode’s native API. Existing unmanaged OpenCode
+terminals are read-only. A changed session, model or server stops sending;
+uncertain delivery requires inspection and explicit reconciliation. Permission
+and question prompts remain in the OpenCode terminal. This feature is not yet
+implemented in the Windows host.
+
 ### True Codex tool approvals
 
 **New Codex…** opens a fresh Astra/medium chat in Herdr with native approval
