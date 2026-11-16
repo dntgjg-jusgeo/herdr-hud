@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import XCTest
 @testable import HerdrHUD
 
@@ -122,6 +123,80 @@ final class CodexApprovalTests:XCTestCase {
         }
         bridge.connect();wait(for:[shown,resolved],timeout:8);bridge.disconnect()
         XCTAssertThrowsError(try bridge.respond(token:token,choice:"session"))
+        withExtendedLifetime(fixture){}
+    }
+
+    func testNativeSteerUsesExactActiveTurnAndAcknowledgementWithoutRetry()throws {
+        var p=try ready()
+        _=try p.receive(["method":"turn/started","params":["threadId":"thread-A","turn":["id":"active-A","status":"inProgress"]]])
+        XCTAssertTrue(p.canSteer)
+        XCTAssertThrowsError(try p.prepareSteer(expectedTurnID:"other",input:[["type":"text","text":"Keep working"]],clientID:"local-1"))
+        let request=try p.prepareSteer(expectedTurnID:"active-A",input:[["type":"text","text":"Follow up"]],clientID:"local-1")
+        XCTAssertEqual(request["method"] as? String,"turn/steer")
+        let params=request["params"] as! Row
+        XCTAssertEqual(params["expectedTurnId"] as? String,"active-A");XCTAssertEqual(params["threadId"] as? String,"thread-A")
+        XCTAssertFalse(p.canSteer)
+        XCTAssertThrowsError(try p.prepareSteer(expectedTurnID:"active-A",input:[],clientID:"local-2"))
+        _=try p.receive(["id":request["id"]!,"result":["turnId":"active-A"]])
+        XCTAssertEqual(p.steerOutcome?["ok"] as? Bool,true);XCTAssertNil(p.steerPending);XCTAssertTrue(p.canSteer)
+        let again=try p.prepareSteer(expectedTurnID:"active-A",input:[["type":"text","text":"Next"]],clientID:"local-2")
+        _=try p.receive(["id":again["id"]!,"result":["turnId":"different-turn"]])
+        XCTAssertTrue(p.steerUncertain);XCTAssertFalse(p.canSteer);XCTAssertEqual(p.steerOutcome?["uncertain"] as? Bool,true)
+    }
+    func testHumanQuestionsAndCompletedTurnsDisableNativeSteer()throws {
+        var p=try ready()
+        _=try p.receive(["method":"turn/started","params":["threadId":"thread-A","turn":["id":"turn-A","status":"inProgress"]]])
+        _=try p.receive(approval());XCTAssertFalse(p.canSteer)
+        _=try p.receive(["method":"serverRequest/resolved","params":["threadId":"thread-A","requestId":17]])
+        XCTAssertTrue(p.canSteer)
+        _=try p.receive(["method":"thread/status/changed","params":["threadId":"thread-A","status":["type":"active","activeFlags":["waitingOnUserInput"]]]])
+        XCTAssertFalse(p.canSteer)
+        _=try p.receive(["method":"turn/completed","params":["threadId":"thread-A","turn":["id":"turn-A"]]])
+        XCTAssertFalse(p.canSteer)
+    }
+    func testServerErrorAfterSteerRemainsUncertainWithoutAssumingPreMutationRefusal()throws {
+        var p=try ready();_=try p.receive(["method":"turn/started","params":["threadId":"thread-A","turn":["id":"active-A","status":"inProgress"]]])
+        let request=try p.prepareSteer(expectedTurnID:"active-A",input:[["type":"text","text":"Follow up"]],clientID:"local")
+        _=try p.receive(["id":request["id"]!,"error":["code":-32600,"message":"active turn changed"]])
+        XCTAssertEqual(p.steerOutcome?["uncertain"] as? Bool,true);XCTAssertTrue(p.steerUncertain);XCTAssertFalse(p.canSteer)
+    }
+    func testPrivateNativeImageCopiesValidateRasterAndRejectSymlinkCache()throws {
+        let root=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("hud-steer-image-"+UUID().uuidString)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let image=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:4,pixelsHigh:4,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!.representation(using:.png,properties:[:])!
+        let images=try ImageAttachment.parse([["data":image.base64EncodedString()]])
+        let cache=CodexApprovals.ImageCache(directory:root),paths=try cache.stage(images)
+        XCTAssertEqual(paths.count,1);XCTAssertEqual(try Data(contentsOf:paths[0]),image)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath:paths[0].path)[.posixPermissions] as? NSNumber)?.intValue,0o600)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath:root.path)[.posixPermissions] as? NSNumber)?.intValue,0o700)
+        XCTAssertThrowsError(try cache.stage([ImageAttachment(data:Data("<svg/>".utf8),name:"unsafe.svg")]))
+        cache.remove(paths);XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath:root.path).isEmpty)
+        let outside=root.appendingPathComponent("outside");try Data("keep".utf8).write(to:outside)
+        try FileManager.default.createSymbolicLink(at:root.appendingPathComponent("native-alias.png"),withDestinationURL:outside)
+        XCTAssertThrowsError(try cache.stage(images));XCTAssertEqual(try String(contentsOf:outside),"keep")
+    }
+
+    func testNativeSteerOverSyntheticWebSocketIncludesPrivateImageAndExactAck()throws {
+        let fixture=try CodexSocketTests.Fixture(mode:"steer")
+        let directory=fixture.folder.appendingPathComponent("images",isDirectory:true)
+        let cache=CodexApprovals.ImageCache(directory:directory)
+        let image=NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:4,pixelsHigh:4,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!.representation(using:.png,properties:[:])!
+        let images=try ImageAttachment.parse([["data":image.base64EncodedString()]])
+        let accepted=expectation(description:"exact native steer acknowledgement"),completed=expectation(description:"steered turn completed")
+        var bridge:CodexApprovals!,started=false,finished=false
+        bridge=CodexApprovals(binary:"/unused",socket:fixture.socket,threadID:"thread-A",imageCache:cache){state in
+            if !started,state["canSteer"] as? Bool == true {
+                started=true
+                do{try bridge.steer(expectedTurnID:"active-A",text:"Synthetic follow-up only",attachments:images){result in
+                    XCTAssertEqual(result["ok"] as? Bool,true);XCTAssertEqual(result["turnId"] as? String,"active-A");accepted.fulfill()
+                }}catch{XCTFail("Synthetic follow-up preflight failed")}
+            }else if started,!finished,state["connected"] as? Bool == true,state["activeTurnId"] as? String == "" {
+                finished=true;completed.fulfill()
+            }
+        }
+        bridge.connect();wait(for:[accepted,completed],timeout:8);bridge.disconnect()
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath:directory.path).isEmpty)
+        XCTAssertThrowsError(try bridge.steer(expectedTurnID:"active-A",text:"Never sent",attachments:[]){_ in XCTFail("Disconnected follow-up must not be submitted")})
         withExtendedLifetime(fixture){}
     }
 

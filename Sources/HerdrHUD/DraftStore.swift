@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CoreFoundation
 
 /// Private, bounded snapshots. Call on one serial queue; loading must precede saving.
 /// Invalid existing files are left untouched and disable writes for this instance.
@@ -9,6 +10,8 @@ final class DraftStore {
     static let maximumTotalTextBytes = 1024 * 1024
     static let maximumImageBytes = 24 * 1024 * 1024
     static let maximumFileBytes = 36 * 1024 * 1024
+    static let maximumQueuePerSession = 16
+    static let maximumQueueCount = 128
     let directory: URL
     private var loaded = false
 
@@ -40,10 +43,21 @@ final class DraftStore {
         return fd
     }
     static func validate(_ value: Any) throws -> Row {
-        func invalid() -> HUDError { HUDError("Draft snapshot is invalid or exceeds its storage limit. Existing drafts have been retained.") }
-        guard let snapshot = value as? Row, let version = snapshot["version"] as? Int, version == 1,
+        func invalid() -> HUDError { HUDError("Draft snapshot is invalid or exceeds its storage limit. Existing drafts and queued prompts have been retained.") }
+        guard let snapshot = value as? Row, let version = snapshot["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), [1.0,2.0].contains(version.doubleValue),
               let rows = snapshot["drafts"] as? [Row], rows.count <= maximumDrafts else { throw invalid() }
-        var result:[Row] = [], ids = Set<String>(), totalText = 0, totalImages = 0
+        var result:[Row] = [], ids = Set<String>(), tokens = Set<String>(), totalText = 0, totalImages = 0, queueCount = 0
+        func parsedImages(_ images: [Row]) throws -> [Row] {
+            let parsed = try ImageAttachment.parse(images)
+            var safeImages:[Row] = []
+            for (image, original) in zip(parsed,images) {
+                totalImages += image.data.count
+                guard totalImages <= maximumImageBytes, let name = original["name"] as? String,
+                      !name.isEmpty, name.utf8.count <= 480, !name.contains("\0"), !name.contains("/"), !name.contains("\\") else { throw invalid() }
+                safeImages.append(["data":image.data.base64EncodedString(),"name":name])
+            }
+            return safeImages
+        }
         for row in rows {
             guard let id = row["id"] as? String, !id.isEmpty, id.utf8.count <= 8192, !id.contains("\0"), ids.insert(id).inserted,
                   let text = row["text"] as? String, text.utf8.count <= maximumTextBytes,
@@ -53,19 +67,44 @@ final class DraftStore {
             guard totalText <= maximumTotalTextBytes else { throw invalid() }
             let label = row["label"] as? String ?? "Recovered draft"
             guard label.utf8.count <= 800, label.count <= 200 else { throw invalid() }
-            let parsed = try ImageAttachment.parse(images)
-            var safeImages:[Row] = []
-            for (image, original) in zip(parsed,images) {
-                totalImages += image.data.count
-                guard totalImages <= maximumImageBytes, let name = original["name"] as? String,
-                      !name.isEmpty, name.utf8.count <= 480, !name.contains("\0"), !name.contains("/"), !name.contains("\\") else { throw invalid() }
-                safeImages.append(["data":image.data.base64EncodedString(),"name":name])
+            let safeImages = try parsedImages(images)
+            var queue:[Row] = []
+            let rawQueue: [Row]
+            if let value = row["queue"] { guard let items = value as? [Row] else { throw invalid() };rawQueue = items } else { rawQueue = [] }
+            guard rawQueue.count <= maximumQueuePerSession else { throw invalid() }
+            for item in rawQueue {
+                guard let token = item["token"] as? String, !token.isEmpty, token.utf8.count <= 128,
+                      token.rangeOfCharacter(from:.controlCharacters) == nil, tokens.insert(token).inserted,
+                      let queuedText = item["text"] as? String, queuedText.utf8.count <= maximumTextBytes, !queuedText.contains("\0"),
+                      let queuedImages = item["images"] as? [Row], queuedImages.count <= ImageAttachment.maximumCount,
+                      let status = item["status"] as? String, ["queued","pending","uncertain"].contains(status),
+                      !queuedText.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || !queuedImages.isEmpty else { throw invalid() }
+                queueCount += 1;totalText += queuedText.utf8.count
+                guard queueCount <= maximumQueueCount, totalText <= maximumTotalTextBytes else { throw invalid() }
+                queue.append(["token":token,"text":queuedText,"images":try parsedImages(queuedImages),"status":status == "pending" ? "uncertain" : status])
             }
-            if !text.isEmpty || !safeImages.isEmpty || uncertain || keyUncertain {
-                result.append(["id":id,"label":label,"text":text,"images":safeImages,"uncertain":uncertain,"keyUncertain":keyUncertain])
+            if !text.isEmpty || !safeImages.isEmpty || uncertain || keyUncertain || !queue.isEmpty {
+                var normalized:Row = ["id":id,"label":label,"text":text,"images":safeImages,"uncertain":uncertain,"keyUncertain":keyUncertain]
+                if !queue.isEmpty { normalized["queue"] = queue };result.append(normalized)
             }
         }
-        return ["version":1,"drafts":result]
+        return ["version":2,"drafts":result]
+    }
+    /// Background delivery is authorized only by the exact persisted FIFO head.
+    /// The caller also consumes this token once per app incarnation before IO.
+    static func authorizeQueuedPrompt(_ snapshot: Row, id: String, token: String, text: String, attachments: Any?) throws {
+        func refused() -> HUDError { HUDError("Queued prompt changed or was not saved for this exact session. Refresh before sending.") }
+        let validated = try validate(snapshot)
+        guard let rows = validated["drafts"] as? [Row], let row = rows.first(where: { $0["id"] as? String == id }),
+              let queue = row["queue"] as? [Row], let head = queue.first,
+              head["token"] as? String == token, head["status"] as? String == "uncertain", head["text"] as? String == text,
+              let expected = head["images"] as? [Row] else { throw refused() }
+        let supplied: [Row]
+        if let attachments = attachments { guard let images = attachments as? [Row] else { throw refused() };supplied = images } else { supplied = [] }
+        guard supplied.count == expected.count else { throw refused() }
+        for (image,saved) in zip(supplied,expected) {
+            guard let data = image["data"] as? String, data == saved["data"] as? String else { throw refused() }
+        }
     }
     func load() throws -> Row {
         loaded = false
@@ -73,7 +112,7 @@ final class DraftStore {
         let fd = openat(folder,"snapshot.json",O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         if fd < 0 {
             guard errno == ENOENT else { throw failure() }
-            loaded = true;return ["version":1,"drafts":[Row]()]
+            loaded = true;return ["version":2,"drafts":[Row]()]
         }
         defer { close(fd) }
         var info = stat()

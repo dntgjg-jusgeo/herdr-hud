@@ -481,3 +481,26 @@ user session launched. Native/bundled resources match current build, and the
 persisted draft snapshot is unchanged. Exact semantic response/resolution was
 tested through a synthetic WebSocket and rendered UI, not a real user permission.
 Full evidence is outputs/herdr-hud-native-approvals.md in the parent chat directory.
+
+## Multiple follow-ups — November 16, 2026
+
+The shared composer can accept durable FIFO items while Claude/Codex work. OrcaRouter's
+Claude launcher still executes Claude Code, so it uses the same route without
+provider credential changes. Queue data lives in the existing private draft snapshot;
+pending items persist as uncertain. Snapshot version 2 reads/migrates version 1;
+older HUD builds refuse the newer format instead of silently discarding queues.
+Restart pauses all restored queues. Changed
+identities never inherit a queue; recovery copies explicitly. Queue removal and
+unknown delivery are explicit; no automatic retry is added.
+
+The native queuedPrompt operation allows closed-panel delivery only after validating
+its exact persisted head token, text and ordered image payload. It consumes the
+agent/token pair before mutation. HC prompt transport still requires idle and
+force=false; working-state terminal input remains unsupported because hc checks
+status before paste and can later send Enter into a changed UI. The next FIFO item
+waits for an observed Working→idle cycle or explicit Continue after inspection.
+
+Native linked Codex sessions offer expected-turn steering separately from queueing.
+No error falls back to terminal input or a different turn. UI intent persists before
+request dispatch, and unknown writes retain both the draft and uncertainty block.
+All transport verification must use fake or isolated sessions, never user agents.

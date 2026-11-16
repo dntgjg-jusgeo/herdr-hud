@@ -10,6 +10,7 @@ let attachmentPreview=null,attachmentButtons=new Map();
 let rosterMode='herdr',shepherdr=null,supportsShepherdr=false,selectedRow='';
 let supportsNativeApprovals=false,nativeApprovalStates=new Map(),nativeApprovalRequests=new Map(),nativeApprovalsBusy=new Set(),newCodexBusy=false;
 let completed=new Set(),queuedOutput=new Set(),quickPrompts=[],supportsQuick=false;
+let queues=new Map(),queueSaving=false,queueHolds=new Map(),queuePaused=new Set(),steerReconcileRequests=new Map();
 let supportsDrafts=false,draftsLoaded=true,draftLabels=new Map(),draftTouched=new Set(),draftPersistence=null,storageRequests=new Map(),storageFailed=false,pendingDraftPrompt=new Set(),pendingDraftKeys=new Set();
 let baseline=false,unread=new Set(),drafts=new Map(),outputs=new Map(),since=new Map(),uncertain=new Set(),promptByRequest=new Map();
 function request(op,extra={}){const requestID=`${Date.now()}-${++requestSequence}`;post({op,requestID,...extra});return requestID;}
@@ -24,7 +25,7 @@ function el(tag,text,cls){const node=document.createElement(tag);if(text!==undef
 function notice(text){$('notice').hidden=!text;$('notice').textContent=text;}
 function badge(){const list=rows();post({op:'badge',count:list?list.filter(r=>r.need||unread.has(r.agent_id)).length:agents.filter(a=>a.agent_status==='blocked'||unread.has(a.id)).length});}
 // Follow replacement sessions only when no draft would be moved implicitly.
-function follow(){if(!selectedRow)selectedRow=linked(selected)?.key||'';const r=selectedRow&&rows()?.find(r=>r.key===selectedRow);if(!r?.view_id||r.view_id===selected)return;if(($('prompt').value||drafts.get(selected))||imagesFor(selected).length||attachmentLoads.get(selected)){notice('This agent changed. Your draft stays with its original session. Select the new agent and use Saved drafts to copy it.');return;}if(uncertain.has(selected))uncertain.add(r.view_id);drafts.set(r.view_id,$('prompt').value);select(r.view_id);}
+function follow(){if(!selectedRow)selectedRow=linked(selected)?.key||'';const r=selectedRow&&rows()?.find(r=>r.key===selectedRow);if(!r?.view_id||r.view_id===selected)return;if(($('prompt').value||drafts.get(selected))||imagesFor(selected).length||attachmentLoads.get(selected)||queueFor(selected).length){notice('This agent changed. Your draft stays with its original session. Select the new agent and use Saved drafts to copy it.');return;}if(uncertain.has(selected))uncertain.add(r.view_id);drafts.set(r.view_id,$('prompt').value);select(r.view_id);}
 function renderModes(){$('modes').hidden=!supportsShepherdr;$('mode-herdr').setAttribute('aria-pressed',String(rosterMode==='herdr'));$('mode-shepherdr').setAttribute('aria-pressed',String(rosterMode==='shepherdr'));$('roster-label').textContent=rosterMode==='shepherdr'&&supportsShepherdr?'SPACES & TASKS':'AGENTS';$('search').placeholder=rosterMode==='shepherdr'&&supportsShepherdr?'Find a space or task…':'Find an agent…';}
 function renderShepherdr(list,roster,scroll){
   const shown=list.filter(r=>`${r.title} ${r.detail} ${r.state} ${r.machine}`.toLowerCase().includes(filter));$('count').textContent=list.filter(r=>r.kind==='task').length;
@@ -47,18 +48,24 @@ function select(id){
   if(selected)drafts.set(selected,$('prompt').value);selectedRow=linked(id)?.key||'';selected=id;request('preferences',{selectedAgent:id});selectionEpoch++;lastRendered='';$('prompt').value=drafts.get(id)||'';
   lastOutput=outputs.get(id)?.text||'';queuedOutput.delete(id);unread.delete(id);badge();if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();if(supportsNativeApprovals)request('nativeApprovals',{id});
 }
+function queueFor(id){return queues.get(id)||[];}
+function canQueue(a){return !!(supportsDrafts&&window.HUDFollowups&&a?.online&&['codex','claude'].includes(a.agent)&&['working','idle','done'].includes(a.agent_status));}
+function steerState(a){const s=nativeApprovalStates.get(a?.id);return a?.agent_status==='working'&&s?.canSteer&&!s.steerUncertain?s:null;}
 function renderHeader(){
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
   $('agent-status').textContent=statusLabel(a);$('agent-status').className='status-chip '+(a?.agent_status||'unknown');
   const state=a?.agent_status||'';const busy=state==='working';$('working').hidden=!busy;
   if(busy&&!since.has(a.id))since.set(a.id,Date.now());
-  $('send').disabled=!draftsLoaded||storageFailed||!a?.online||a.can_prompt===false||!['idle','done'].includes(state)||sending||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
+  const steer=steerState(a),queueMode=canQueue(a)&&(!steer&&(busy||queueFor(selected).length>0||queueHolds.has(selected)));
+  $('send').textContent=steer?'Send update ↗':queueMode?'Queue prompt +':'Send prompt ↗';
+  $('send').disabled=!draftsLoaded||storageFailed||!a?.online||(!steer&&!queueMode&&(a.can_prompt===false||!['idle','done'].includes(state)))||sending||queueSaving||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
+  $('queue-instead').hidden=!steer||!canQueue(a);$('queue-instead').disabled=$('send').disabled;
   $('prompt').disabled=!a||!draftsLoaded;$('chat').disabled=a?.agent!=='codex';
-  $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?'Agent is working. You can draft the next prompt here.':a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
+  $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?(steer?'Send an update to the active Codex task.':canQueue(a)?'Queue another prompt. It will send when this agent is ready.':'Agent is working. You can draft the next prompt here.'):a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
   $('reconcile').hidden=!uncertain.has(selected);
-  renderNativeApprovals();renderTerminalControls();renderSuggestions();renderQuickPrompts();renderFileLinks();$('jump-latest').hidden=!queuedOutput.has(selected);$('draft-status').textContent=!supportsDrafts?'':!draftsLoaded?'Restoring saved drafts…':storageFailed?'Draft not saved — keep the HUD open.':'Draft recovery on';
-  $('attach').hidden=!supportsAttachments;$('attach').disabled=!canAttach(a)||sending||uncertain.has(selected);renderAttachments();
+  renderQueue();renderNativeApprovals();renderTerminalControls();renderSuggestions();renderQuickPrompts();renderFileLinks();$('jump-latest').hidden=!queuedOutput.has(selected);$('draft-status').textContent=!supportsDrafts?'':!draftsLoaded?'Restoring saved drafts…':storageFailed?'Draft not saved — keep the HUD open.':'Draft recovery on';
+  $('attach').hidden=!supportsAttachments;$('attach').disabled=!canAttach(a)||sending||queueSaving||uncertain.has(selected);renderAttachments();
 }
 function inline(text,parent){ // No terminal text is ever interpreted as HTML.
   for(const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)){if(part.startsWith('**')&&part.endsWith('**'))parent.append(el('strong',part.slice(2,-2)));else if(part.startsWith('`')&&part.endsWith('`'))parent.append(el('code',part.slice(1,-1)));else parent.append(document.createTextNode(part));}
@@ -210,17 +217,17 @@ function renderAttachments(){
   $('attachments').replaceChildren(...items.map(item=>{
     const chip=el('div',undefined,'attachment'),image=el('img'),preview=el('button',undefined,'attachment-thumbnail');image.src=item.url;image.alt='';
     preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);preview.append(image);preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
-    const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||uncertain.has(selected);
+    const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||queueSaving||uncertain.has(selected);
     remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));draftChanged();renderHeader();};
     chip.append(preview,el('span',item.name),remove);return chip;
   }));
 }
 async function stageImages(files){
-  if(!draftsLoaded||!canAttach()||sending||uncertain.has(selected)){notice('Images are available for local hc Claude and Codex agents.');return;}
+  if(!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Images are available for local hc Claude and Codex agents.');return;}
   const id=selected,list=Array.from(files),count=imagesFor(id).length+(attachmentLoads.get(id)||0);
-  const stagedBytes=[...attachments.values()].flat().reduce((n,item)=>n+item.bytes,0)+pendingAttachmentBytes;
+  const stagedBytes=[...attachments.values(),...[...queues.values()].flat().map(item=>item.images)].flat().reduce((n,item)=>n+item.bytes,0)+pendingAttachmentBytes;
   if(!list.length)return;
-  if(stagedBytes+list.reduce((n,f)=>n+f.size,0)>24*1024*1024){notice('Attached drafts total 24 MB. Remove an image from another draft first.');return;}
+  if(stagedBytes+list.reduce((n,f)=>n+f.size,0)>24*1024*1024){notice('Drafts and queued images total 24 MB. Remove an image or queued prompt first.');return;}
   if(count+list.length>3||list.some(f=>!['image/png','image/jpeg','image/webp','image/gif'].includes(f.type)||!f.size||f.size>4*1024*1024)){notice('Attach up to 3 PNG, JPEG, WebP or GIF images, 4 MB each.');return;}
   pendingAttachmentBytes+=list.reduce((n,f)=>n+f.size,0);attachmentLoads.set(id,(attachmentLoads.get(id)||0)+list.length);renderHeader();
   for(const file of list){
@@ -255,10 +262,72 @@ for(const kind of ['dragover','drop'])document.addEventListener(kind,e=>{
   if(kind==='drop'){stageImages(e.dataTransfer.files);}
 });
 function read(){if(!opened||reading||!active()?.online)return;reading=true;request('output',{id:selected});}
-function send(){if($('send').disabled)return;const id=selected,message=$('prompt').value;sending=true;notice('');const images=imagesFor(id).slice();pendingDraftPrompt.add(id);renderHeader();beforeMutation(()=>{const requestID=request('prompt',{id,message,attachments:images.map(x=>({data:x.data}))});promptByRequest.set(requestID,{id,message,images});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;renderHeader();});}
+function renderQueue(){
+  const items=queueFor(selected),panel=$('prompt-queue');panel.hidden=!items.length;
+  if(!items.length)return;
+  $('queue-title').textContent=`${items.length} queued prompt${items.length===1?'':'s'}`;
+  const paused=queuePaused.has(selected)||uncertain.has(selected)||items[0]?.status==='uncertain';
+  $('queue-status').textContent=paused?'Paused — inspect this session before continuing.':queueHolds.has(selected)?'Waiting for this task to finish.':'Sends in order when this agent is ready.';
+  $('queue-resume').hidden=!paused&&!queueHolds.has(selected);
+  $('queue-resume').disabled=sending||queueSaving||storageFailed||!active()?.online||active()?.agent_status!=='idle'||uncertain.has(selected)||items[0]?.status!=='queued';
+  const signature=JSON.stringify([selected,items.map(x=>[x.token,x.text,x.images.length,x.status]),sending,queueSaving]);
+  if(panel._signature===signature)return;panel._signature=signature;
+  $('queue-items').replaceChildren(...items.map((item,index)=>{
+    const row=el('div',undefined,'queued-prompt');row.append(el('span',`${index+1}. ${item.text.slice(0,150)||'Image prompt'}${item.images.length?` · ${item.images.length} image(s)`:''}`));
+    const remove=el('button',item.status==='uncertain'?'Discard uncertain item':'Remove');remove.disabled=item.status==='pending'||queueSaving||sending;
+    remove.onclick=()=>{if(remove.disabled)return;try{window.HUDFollowups.remove(queues,selected,item.token);draftChanged();renderHeader();}catch(error){notice(error.message);}};row.append(remove);return row;
+  }));
+}
+function clearSentDraft(id,message,images){
+  if(selected===id&&$('prompt').value===message)$('prompt').value='';
+  if(drafts.get(id)===message)drafts.delete(id);
+  const sent=new Set(images.map(x=>x.key));attachments.set(id,imagesFor(id).filter(x=>!sent.has(x.key)));
+}
+function enqueuePrompt(){
+  const id=selected,message=$('prompt').value,images=imagesFor(id).slice();
+  const token=`queue-${Date.now()}-${++requestSequence}`;
+  try{window.HUDFollowups.enqueue(queues,id,{token,text:message,images});}
+  catch(error){notice(error.message);return;}
+  // Move the captured intent atomically: disk must never contain both a queued
+  // item and the unchanged composer copy after an acknowledged enqueue.
+  clearSentDraft(id,message,images);queueSaving=true;renderHeader();
+  beforeMutation(()=>{queueSaving=false;notice('Prompt saved in the queue.');renderHeader();pumpQueue();},()=>{
+    window.HUDFollowups.remove(queues,id,token);queueSaving=false;queuePaused.add(id);
+    const live=selected===id?$('prompt').value:drafts.get(id)||'';
+    const restored=message+(message&&live?'\n\n':'')+live;drafts.set(id,restored);if(selected===id)$('prompt').value=restored;
+    attachments.set(id,[...images,...imagesFor(id)]);renderHeader();
+  });
+}
+function observeQueueCycles(){
+  for(const a of agents){const hold=queueHolds.get(a.id);if(!hold)continue;
+    if(a.agent_status==='working')queueHolds.set(a.id,'await-idle');
+    else if(a.agent_status==='idle'&&hold==='await-idle')queueHolds.delete(a.id);
+  }
+}
+function pumpQueue(){
+  if(!supportsDrafts||!draftsLoaded||storageFailed||queueSaving||sending)return;
+  const a=agents.find(a=>a.online&&a.agent_status==='idle'&&a.can_prompt!==false&&queueFor(a.id).length&&!queueHolds.has(a.id)&&!queuePaused.has(a.id)&&!uncertain.has(a.id)&&!terminalKeyUncertain.has(a.id));
+  if(!a)return;const item=window.HUDFollowups.head(queues,a.id);if(!item||item.status!=='queued')return;
+  window.HUDFollowups.begin(queues,a.id,item.token);queueHolds.set(a.id,'await-working');
+  sendPrompt(a.id,item.text,item.images,{queueToken:item.token});
+}
+$('queue-instead').onclick=()=>{if(!$('queue-instead').hidden&&!$('queue-instead').disabled)enqueuePrompt();};
+$('queue-resume').onclick=()=>{if($('queue-resume').disabled)return;queuePaused.delete(selected);queueHolds.delete(selected);renderHeader();pumpQueue();};
+
+function send(){
+  if($('send').disabled)return;
+  const a=active(),steer=steerState(a);
+  if(!steer&&canQueue(a)&&(a.agent_status==='working'||queueFor(selected).length||queueHolds.has(selected))){enqueuePrompt();return;}
+  const id=selected,message=$('prompt').value,images=imagesFor(id).slice();
+  sendPrompt(id,message,images,steer?{operation:'nativeSteer',expectedTurnId:steer.activeTurnId}:{});
+}
+function sendPrompt(id,message,images,options={}){
+  sending=true;notice('');if(!options.operation)queueHolds.set(id,'await-working');pendingDraftPrompt.add(id);renderHeader();
+  beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
+}
 window.receive=({type,data})=>{
   if(type==='roster'){
-    const before=agents;agents=data.agents||[];shepherdr=data.shepherdr||(rosterMode==='shepherdr'?shepherdr:null);
+    const before=agents;agents=data.agents||[];observeQueueCycles();shepherdr=data.shepherdr||(rosterMode==='shepherdr'?shepherdr:null);
     if(baseline)for(const a of agents){const old=before.find(b=>b.id===a.id);if(old&&a.online&&old.online&&old.agent_status==='working'&&['idle','done'].includes(a.agent_status)){completed.add(a.id);unread.add(a.id);}if(a.agent_status==='working')completed.delete(a.id);if(old&&a.agent_status==='blocked'&&old.agent_status!=='blocked')unread.add(a.id);}
     const updates=baseline?HUDModel.alerts(before,agents):[];baseline=true;
     for(const a of agents){if(a.agent_status==='working'&&!since.has(a.id))since.set(a.id,Date.now());if(a.agent_status!=='working')since.delete(a.id);}
@@ -267,7 +336,7 @@ window.receive=({type,data})=>{
     if(updates.length&&!opened){const a=updates[0];request('alertPreview',{id:a.id,title:label(a)+(a.agent_status==='blocked'?' needs input':' finished')});}
     $('machines').replaceChildren(...(data.machines||[]).map(m=>{const node=el('span',undefined,'machine');node.append(el('span',undefined,'dot '+(m.online?'online':'')),document.createTextNode(`${m.label} · ${m.online?`${m.count} agents`:'offline'}`));node.title=m.error||'';return node;}));
     if(data.discoveryError)notice('Herdr setup: '+data.discoveryError);else if(rosterMode==='shepherdr'&&data.shepherdr?.error)notice('Shepherdr: '+data.shepherdr.error);
-    follow();if(!selected&&agents.length)select(rows()?.find(r=>r.agent_id)?.agent_id||agents[0].id);renderRoster();renderHeader();badge();read();
+    follow();if(!selected&&agents.length)select(rows()?.find(r=>r.agent_id)?.agent_id||agents[0].id);renderRoster();renderHeader();badge();read();pumpQueue();
   }else if(type==='visibility'){opened=data.open;if(opened){renderHeader();read();}}
   else if(type==='resetBaseline'){baseline=false;}
   else if(type==='select'){select(data.id);}
@@ -282,13 +351,18 @@ window.receive=({type,data})=>{
     else if(type==='reconcileTerminalKeys')terminalKeyUncertain.delete(pending.id);
     const output=outputs.get(pending.id);if(output)delete output.terminalControl;
     draftChanged();renderTerminalControls();request('refresh');read();
-  }else if(type==='prompt'){
-    const pending=promptByRequest.get(data.requestID);if(!pending)return;promptByRequest.delete(data.requestID);sending=false;
-    if(data.error){notice(data.error);if(/uncertain/i.test(data.error))uncertain.add(pending.id);}
-    else{if(selected===pending.id&&$('prompt').value===pending.message)$('prompt').value='';if(drafts.get(pending.id)===pending.message)drafts.delete(pending.id);const sent=new Set(pending.images.map(x=>x.key));attachments.set(pending.id,imagesFor(pending.id).filter(x=>!sent.has(x.key)));notice('Prompt sent.');request('refresh');}draftChanged();renderHeader();
+  }else if(type==='prompt'||type==='queuedPrompt'||type==='nativeSteer'){
+    const pending=promptByRequest.get(data.requestID);if(!pending||pending.operation!==type)return;promptByRequest.delete(data.requestID);sending=false;
+    if(data.error){notice(data.error);if(data.uncertain||/uncertain/i.test(data.error))uncertain.add(pending.id);}
+    else{if(!pending.queueToken)clearSentDraft(pending.id,pending.message,pending.images);notice(type==='nativeSteer'?'Update accepted by Codex.':'Prompt sent.');request('refresh');}
+    if(pending.queueToken){window.HUDFollowups.settle(queues,pending.id,pending.queueToken,!data.error);if(data.error)queuePaused.add(pending.id);}
+    draftChanged();renderHeader();
+    // Persist removal before allowing another queued delivery; a crash retains an uncertain head.
+    if(supportsDrafts){queueSaving=true;beforeMutation(()=>{queueSaving=false;renderHeader();pumpQueue();},()=>{queueSaving=false;renderHeader();});}
   }else if(type==='previewFolderChanged'){if(data.id===selected&&previewMode)loadPreviews();
   }else if(type==='previews'){renderPreviews(data);
-  }else if(type==='nativeApprovals'){if(typeof data.id==='string'){nativeApprovalStates.set(data.id,data);if(data.id===selected){renderHeader();}}}
+  }else if(type==='nativeApprovals'){if(typeof data.id==='string'){nativeApprovalStates.set(data.id,data);if(data.steerUncertain){uncertain.add(data.id);draftChanged();}if(data.id===selected){renderHeader();}}}
+  else if(type==='nativeSteerReconcile'){const id=steerReconcileRequests.get(data.requestID);if(!id)return;steerReconcileRequests.delete(data.requestID);if(data.error)notice(data.error);else{uncertain.delete(id);draftChanged();notice('');}renderHeader();}
   else if(type==='nativeApprovalResponse'){const pending=nativeApprovalRequests.get(data.requestID);if(!pending)return;nativeApprovalRequests.delete(data.requestID);nativeApprovalsBusy.delete(pending.token);if(data.error)notice(data.error);renderNativeApprovals();}
   else if(type==='newCodexProgress'){$('new-codex-status').textContent=data.message||'Complete startup in Herdr.';}
   else if(type==='newCodexSession'){newCodexBusy=false;$('new-codex-start').disabled=false;$('new-codex-cancel').disabled=false;if(data.error){$('new-codex-status').textContent=data.error;}else if(data.cancelled){$('new-codex-status').textContent='Choose its project folder to start.';}else{$('new-codex-dialog').close();request('refresh');if(data.id)select(data.id);}}
@@ -301,7 +375,7 @@ window.receive=({type,data})=>{
 window.handleEscape=()=>{if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();window.handleEscape();}});
 $('refresh').onclick=()=>request('refresh');$('close').onclick=()=>request('close');$('hide').onclick=()=>request('hide');$('send').onclick=send;
-$('reconcile').onclick=()=>{uncertain.delete(selected);draftChanged();notice('');renderHeader();};
+$('reconcile').onclick=()=>{if(nativeApprovalStates.get(selected)?.steerUncertain){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('nativeSteerReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}uncertain.delete(selected);draftChanged();notice('');renderHeader();};
 $('search').oninput=()=>{filter=$('search').value.toLowerCase();renderRoster();};
 $('prompt').oninput=()=>{drafts.set(selected,$('prompt').value);draftChanged();renderHeader();};
 $('prompt').onkeydown=e=>{
@@ -334,7 +408,7 @@ function renderQuickPrompts(){
   if(!supportsQuick)return;
   const target=$('quick-buttons'),signature=JSON.stringify([quickPrompts,!!active(),draftsLoaded]);
   if(target._signature!==signature){target._signature=signature;target.replaceChildren(...quickPrompts.map(item=>{const b=el('button',item.label);b.title=item.text;b.disabled=!active()||!draftsLoaded;b.onclick=()=>{const input=$('prompt');if(input.disabled)return;input.value+=(input.value.trim()?'\n\n':'')+item.text;input.oninput();input.focus();};return b;}));}
-  $('recover-drafts').hidden=![...drafts.keys(),...attachments.keys()].some(id=>id!==selected&&((drafts.get(id)||'').length||imagesFor(id).length));
+  $('recover-drafts').hidden=![...drafts.keys(),...attachments.keys(),...queues.keys()].some(id=>id!==selected&&((drafts.get(id)||'').length||imagesFor(id).length||queueFor(id).length));
 }
 function editQuickPrompts(){
   const list=$('quick-editor-rows');list.replaceChildren();
@@ -351,7 +425,7 @@ $('edit-quick').onclick=editQuickPrompts;$('quick-add').onclick=()=>addQuickRow(
 $('quick-save').onclick=()=>{try{const rows=Array.from($('quick-editor-rows').children).map(row=>({label:row.children[0].value,text:row.children[1].value}));const prompts=window.HUDUtilities.prompts(rows);request('saveQuickPrompts',{prompts});$('quick-editor').close();}catch(error){notice(error.message);}};
 $('jump-latest').onclick=()=>{lastOutput=outputs.get(selected)?.text||lastOutput;lastRendered='';queuedOutput.delete(selected);unread.delete(selected);renderOutput();renderHeader();renderRoster();badge();};
 $('output').onscroll=()=>{if(atBottom()&&queuedOutput.has(selected))$('jump-latest').onclick();};
-function draftState(){if(selected&&draftsLoaded)drafts.set(selected,$('prompt').value);return {drafts,attachments,uncertain,keyUncertain:terminalKeyUncertain,labels:draftLabels,pendingPromptIDs:[...pendingDraftPrompt,...[...promptByRequest.values()].map(x=>x.id)],pendingKeyIDs:[...pendingDraftKeys,...[...terminalKeyRequests.values()].map(x=>x.id)]};}
+function draftState(){if(selected&&draftsLoaded)drafts.set(selected,$('prompt').value);return {drafts,attachments,queues,uncertain,keyUncertain:terminalKeyUncertain,labels:draftLabels,pendingPromptIDs:[...pendingDraftPrompt,...[...promptByRequest.values()].map(x=>x.id)],pendingKeyIDs:[...pendingDraftKeys,...[...terminalKeyRequests.values()].map(x=>x.id)]};}
 function draftChanged(){if(selected)draftTouched.add(selected);draftPersistence?.changed(error=>{storageFailed=true;notice(error.message);renderHeader();});}
 function beforeMutation(action,failed){
   if(!supportsDrafts){action();return;}
@@ -366,8 +440,8 @@ function restoreDrafts(data){
   if(data.error){storageFailed=true;draftsLoaded=true;notice(data.error);renderHeader();return;}
   try{
     const state=window.HUDDrafts.mergeRestored(data.snapshot,draftState(),draftTouched);
-    drafts=state.drafts;attachments=state.attachments;uncertain=state.uncertain;terminalKeyUncertain=state.keyUncertain;draftLabels=state.labels;
-    attachmentSequence=Math.max(0,...[...attachments.values()].flat().map(x=>x.key));draftsLoaded=true;
+    drafts=state.drafts;attachments=state.attachments;queues=state.queues||new Map();queuePaused=new Set([...queues.keys()]);uncertain=state.uncertain;terminalKeyUncertain=state.keyUncertain;draftLabels=state.labels;
+    attachmentSequence=Math.max(0,...[...attachments.values(),...[...queues.values()].flat().map(x=>x.images)].flat().map(x=>x.key));draftsLoaded=true;
     $('prompt').value=drafts.get(selected)||'';
     draftPersistence=window.HUDDrafts.persistence({capture:()=>window.HUDDrafts.snapshot(draftState()),save:snapshot=>new Promise((resolve,reject)=>{const id=request('saveDrafts',{snapshot});storageRequests.set(id,{resolve,reject});})});
     draftPersistence.start();renderHeader();
@@ -382,6 +456,15 @@ $('recover-drafts').onclick=()=>{
     try { const state=draftState(),nextDrafts=new Map(drafts),nextImages=new Map(attachments);nextDrafts.set(selected,text);nextImages.set(selected,images);window.HUDDrafts.snapshot({...state,drafts:nextDrafts,attachments:nextImages}); } catch(error){notice(error.message);return;}
     input.value=text;attachments.set(selected,images);if(uncertain.has(id))uncertain.add(selected);if(terminalKeyUncertain.has(id))terminalKeyUncertain.add(selected);input.oninput();$('draft-recovery').close();
   };const remove=el('button','Discard saved draft');remove.onclick=()=>{drafts.delete(id);attachments.delete(id);uncertain.delete(id);terminalKeyUncertain.delete(id);draftChanged();$('recover-drafts').onclick();};row.append(copy,remove);return row;}));
+  for(const [id,items] of queues){if(id===selected)continue;for(const item of items){
+    const row=el('div',undefined,'recovered-row');row.append(el('strong',(draftLabels.get(id)||'Saved session')+' · queued prompt'),el('p',item.text.slice(0,240)),el('small',`${item.images.length} images · ${item.status}`));
+    const copy=el('button','Copy into current draft');copy.disabled=!active()||!draftsLoaded||item.status==='pending';copy.onclick=()=>{
+      const text=$('prompt').value+($('prompt').value.trim()?'\n\n':'')+item.text,images=[...imagesFor(selected),...item.images.map(x=>({...x,key:++attachmentSequence}))];
+      try{const state=draftState(),d=new Map(drafts),a=new Map(attachments);d.set(selected,text);a.set(selected,images);window.HUDDrafts.snapshot({...state,drafts:d,attachments:a});}catch(error){notice(error.message);return;}
+      $('prompt').value=text;attachments.set(selected,images);if(item.status==='uncertain')uncertain.add(selected);$('prompt').oninput();$('draft-recovery').close();
+    };
+    const remove=el('button','Discard queued prompt');remove.disabled=item.status==='pending'||sending||queueSaving;remove.onclick=()=>{if(remove.disabled)return;window.HUDFollowups.remove(queues,id,item.token);draftChanged();$('recover-drafts').onclick();};row.append(copy,remove);$('recovered-list').append(row);
+  }}
   if(!$('draft-recovery').open)$('draft-recovery').showModal();
 };
 $('recovery-close').onclick=()=>$('draft-recovery').close();

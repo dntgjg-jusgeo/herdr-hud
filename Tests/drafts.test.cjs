@@ -25,3 +25,15 @@ test('persistence cannot overwrite before restoration and flush waits for acknow
  current=2;const second=p.flush();await Promise.resolve();assert.deepEqual(writes,[1]);ack();await first;await Promise.resolve();assert.deepEqual(writes,[1,2]);ack();await second;
  p.changed();assert.equal(typeof timer,'function');p.stop();assert.equal(timer,null);
 });
+test('backward compatible queue normalization and queue-only rows are retained',()=>{
+ const old=D.restore(value([row({images:[]})]));assert.equal(old.queues.size,0);
+ const saved=value([row({text:'',images:[],queue:[{token:'first',text:'Next task',images:[],status:'pending'}]})]);
+ const restored=D.restore(saved);assert.equal(restored.queues.get('exact identity')[0].status,'uncertain');
+ assert.equal(D.snapshot(restored).drafts[0].queue[0].text,'Next task');
+ for(const queue of [[{token:'bad',text:'',images:[],status:'queued'}],[{token:'bad',text:'x',images:[],status:'done'}]])assert.throws(()=>D.restore(value([row({queue})])));
+});
+
+test('loads legacy version one but always writes version two to fail closed on old rollback binaries',()=>{
+ const migrated=D.snapshot(D.restore(value([row({images:[]})])));assert.equal(migrated.version,2);assert.equal(migrated.drafts[0].text,'keep me');
+ assert.equal(D.snapshot(D.restore({version:2,drafts:[]})).version,2);assert.throws(()=>D.restore({version:3,drafts:[]}));
+});

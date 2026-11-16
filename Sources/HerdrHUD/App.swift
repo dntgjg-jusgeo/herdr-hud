@@ -61,6 +61,8 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     let defaults = UserDefaults.standard
     let previews = PreviewGallery()
     let fileLinks = FileLinks(), draftStore = DraftStore()
+    // Access only on work queue. A durable queue item is attempted once per HUD run.
+    var queuedPromptClaims = Set<String>()
     lazy var codexLauncher = CodexSessionLauncher(client:client.hc,codex:NSHomeDirectory()+"/.local/bin/codex",onTerminalCreated:{ [weak self] address in
         guard let self=self else { return }
         do {
@@ -71,6 +73,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         }
     })
     var codexApprovals: [String:CodexApprovals] = [:], codexApprovalStates: [String:Row] = [:], codexApprovalEpochs: [String:UUID] = [:]
+    var codexSteerUncertain=Set<String>()
     var codexApprovalBindings: [String:String] = [:], codexApprovalInvalid=Set<String>()
     var launchingCodex = false
     let draftWork = DispatchQueue(label:"herdr-hud.drafts",qos:.userInitiated)
@@ -270,6 +273,15 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         case "nativeApprovals":
             guard client.usesHC,panelOpen,let id=data["id"] as? String else { return }
             syncCodexApprovals(id,reconnect:data["reconnect"] as? Bool == true)
+        case "nativeSteer":
+            guard client.usesHC,panelOpen,let id=data["id"] as? String,id==selected,!requestID.isEmpty,
+                  let turn=data["expectedTurnId"] as? String,let message=data["message"] as? String else {
+                emit("nativeSteer",["requestID":requestID,"id":data["id"] as? String ?? "","error":"The selected Codex session changed. Your draft is retained.","uncertain":false]);return
+            }
+            performNativeSteer(id:id,turn:turn,message:message,attachments:data["attachments"],requestID:requestID)
+        case "nativeSteerReconcile":
+            guard panelOpen,let id=data["id"] as? String,id==selected else{emit("nativeSteerReconcile",["requestID":requestID,"id":data["id"] as? String ?? "","error":"Select the same Codex chat before reconciling."]);return}
+            reconcileNativeSteer(id:id,requestID:requestID)
         case "nativeApprovalResponse":
             guard client.usesHC,panelOpen,let id=data["id"] as? String,id==selected,
                   let token=data["token"] as? String,let choice=data["choice"] as? String else { return }
@@ -408,13 +420,25 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 let value = result
                 DispatchQueue.main.async { self.emit(operation,value) }
             }
-        case "output", "prompt":
-            guard let id = data["id"] as? String, !requestID.isEmpty, panelOpen else { return }
+        case "output", "prompt", "queuedPrompt":
+            guard let id = data["id"] as? String, !requestID.isEmpty else { return }
+            if !panelOpen && operation != "queuedPrompt" {
+                emit(operation,["id":id,"requestID":requestID,"error":"HUD panel closed before delivery. Your draft is retained."])
+                return
+            }
             if operation == "output" { if readBusy { return }; readBusy = true; selected = id }
-            if operation == "prompt" { guard !promptIDs.contains(requestID) else { return }; promptIDs.insert(requestID) }
+            if operation != "output" { guard !promptIDs.contains(requestID) else { return }; promptIDs.insert(requestID) }
             work.async {
                 var result: Row
-                do { result = operation == "output" ? (id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)) : try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"]) }
+                do {
+                    if operation == "queuedPrompt" {
+                        let snapshot = try self.draftWork.sync { try self.draftStore.load() }
+                        try DraftStore.authorizeQueuedPrompt(snapshot, id:id, token:data["queueToken"] as? String ?? "", text:data["message"] as? String ?? "", attachments:data["attachments"])
+                        let claim = encode([id,data["queueToken"] as? String ?? ""])
+                        guard self.queuedPromptClaims.insert(claim).inserted else { throw HUDError("Queued delivery was already attempted. Inspect Herdr; it will not be retried.") }
+                    }
+                    result = operation == "output" ? (id.hasPrefix("shepherdr:") ? try self.shepherdr.transcript(String(id.dropFirst(10))) : try self.client.output(id)) : try self.client.prompt(id,data["message"] as? String ?? "",attachments:data["attachments"])
+                }
                 catch { result = ["error":error.localizedDescription, "id":id] }
                 if operation == "output", result["error"] == nil, self.client.usesHC,
                    let row=self.client.hc.bindings[id],row["machine_id"] as? String == "local",let directory=row["preview_directory"] as? String {
@@ -427,13 +451,60 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         default: break
         }
     }
+    func performNativeSteer(id:String,turn:String,message:String,attachments:Any?,requestID:String) {
+        let epoch=codexApprovalEpochs[id],fingerprint=codexApprovalBindings[id]
+        work.async {
+            do {
+                let images=try ImageAttachment.parse(attachments),row=try self.client.hc.resolve(id)
+                guard row["agent_status"] as? String == "working",row["agent"] as? String == "codex",
+                      let binding=try self.codexLauncher.binding(for:row),let fingerprint=fingerprint,encode(binding)==fingerprint else{throw HUDError("This working Codex session changed. Your draft is retained.")}
+                DispatchQueue.main.async {
+                    guard self.panelOpen,self.selected==id,!self.codexSteerUncertain.contains(id),self.codexApprovalEpochs[id]==epoch,self.codexApprovalBindings[id]==fingerprint,let bridge=self.codexApprovals[id] else {
+                        self.emit("nativeSteer",["requestID":requestID,"id":id,"error":"The selected Codex session changed. Your draft is retained.","uncertain":false]);return
+                    }
+                    // Private image copying and validation stay off the UI thread.
+                    self.work.async {
+                        do {
+                            try bridge.steer(expectedTurnID:turn,text:message,attachments:images){result in
+                                if result["uncertain"] as? Bool == true{self.codexSteerUncertain.insert(id)}
+                                self.emit("nativeSteer",result.merging(["requestID":requestID,"id":id],uniquingKeysWith:{_,new in new}))
+                            }
+                        }catch {
+                            let error=error.localizedDescription
+                            DispatchQueue.main.async{self.emit("nativeSteer",["requestID":requestID,"id":id,"error":error,"uncertain":false])}
+                        }
+                    }
+                }
+            }catch {
+                let error=error.localizedDescription
+                DispatchQueue.main.async{self.emit("nativeSteer",["requestID":requestID,"id":id,"error":error,"uncertain":false])}
+            }
+        }
+    }
+    func reconcileNativeSteer(id:String,requestID:String) {
+        let epoch=codexApprovalEpochs[id],fingerprint=codexApprovalBindings[id]
+        work.async {
+            do {
+                let row=try self.client.hc.resolve(id)
+                guard let binding=try self.codexLauncher.binding(for:row),let fingerprint=fingerprint,encode(binding)==fingerprint else{throw HUDError("This Codex session binding changed. Reconnect and inspect it.")}
+                DispatchQueue.main.async {
+                    var result:Row=["requestID":requestID,"id":id]
+                    do {
+                        guard self.panelOpen,self.selected==id,self.codexApprovalEpochs[id]==epoch,self.codexApprovalBindings[id]==fingerprint,let bridge=self.codexApprovals[id] else{throw HUDError("Select the same Codex chat before reconciling.")}
+                        try bridge.reconcileSteer();self.codexSteerUncertain.remove(id);result["ok"]=true
+                    }catch{result["error"]=error.localizedDescription}
+                    self.emit("nativeSteerReconcile",result)
+                }
+            }catch{let message=error.localizedDescription;DispatchQueue.main.async{self.emit("nativeSteerReconcile",["requestID":requestID,"id":id,"error":message])}}
+        }
+    }
     func stopCodexApprovals(_ id:String,status:String,preserveLink:Bool=false) {
         let thread=codexApprovalStates[id]?["threadId"] as? String ?? ""
         if preserveLink { codexApprovalInvalid.insert(id) }
         codexApprovalBindings.removeValue(forKey:id)
         codexApprovalEpochs.removeValue(forKey:id)
         codexApprovals.removeValue(forKey:id)?.disconnect()
-        let state:Row=["id":id,"linked":preserveLink,"connected":false,"status":status,"cards":[],"threadId":thread]
+        let state:Row=["id":id,"linked":preserveLink,"connected":false,"status":status,"cards":[],"threadId":thread,"canSteer":false,"activeTurnId":"","steerUncertain":codexSteerUncertain.contains(id)]
         codexApprovalStates[id]=state;emit("nativeApprovals",state)
     }
     func syncCodexApprovals(_ id:String,reconnect:Bool=false) {
@@ -447,13 +518,15 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     guard !self.codexApprovalInvalid.contains(id) else { return }
                     guard let binding=binding,let socket=binding["socket"] as? String,let thread=binding["threadID"] as? String else {
                         if self.codexApprovals[id] != nil { self.stopCodexApprovals(id,status:"This terminal is no longer linked.") }
-                        else { self.emit("nativeApprovals",["id":id,"linked":false,"cards":[]]) };return
+                        else { self.emit("nativeApprovals",["id":id,"linked":false,"cards":[],"canSteer":false,"steerUncertain":self.codexSteerUncertain.contains(id)]) };return
                     }
                     if self.codexApprovals[id] != nil { guard self.codexApprovalBindings[id]==encode(binding) else { self.stopCodexApprovals(id,status:"Session binding changed. Reconnect and review the request.",preserveLink:true);return };if let state=self.codexApprovalStates[id] { self.emit("nativeApprovals",state) };return }
                     let epoch=UUID();self.codexApprovalEpochs[id]=epoch;self.codexApprovalBindings[id]=encode(binding)
-                    let bridge=CodexApprovals(binary:NSHomeDirectory()+"/.local/bin/codex",socket:socket,threadID:thread) { [weak self=self] state in
+                    let bridge=CodexApprovals(binary:NSHomeDirectory()+"/.local/bin/codex",socket:socket,threadID:thread,initialSteerUncertain:self.codexSteerUncertain.contains(id)) { [weak self=self] state in
                         guard let self=self,self.codexApprovalEpochs[id]==epoch else { return }
-                        let value=state.merging(["id":id,"linked":true],uniquingKeysWith:{_,new in new})
+                        if state["steerUncertain"] as? Bool == true{self.codexSteerUncertain.insert(id)}
+                        let blocked=self.codexSteerUncertain.contains(id)
+                        let value=state.merging(["id":id,"linked":true,"steerUncertain":blocked,"canSteer":(state["canSteer"] as? Bool == true) && !blocked],uniquingKeysWith:{_,new in new})
                         self.codexApprovalStates[id]=value;self.emit("nativeApprovals",value)
                     }
                     self.codexApprovals[id]=bridge;bridge.connect()

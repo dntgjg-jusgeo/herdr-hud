@@ -106,6 +106,30 @@ run the packaged app. Xcode command-line tools are needed to build from source.
   keybindings determine the effect. These are not semantic approval API buttons.
   Stock hc and existing holders retain manual arrow/Enter/Escape controls.
 
+### Multiple prompts while an agent works
+
+On macOS, **Queue prompt** saves follow-ups for Claude Code and existing Codex
+terminal sessions while they work. Claude Code launched through a model router
+uses the same queue. Prompts and images remain with their exact session, survive
+HUD restart, and appear in a removable FIFO list. The HUD delivers one at a time
+when the agent reports idle; it can keep delivering while its panel is closed.
+The HUD must remain running. Permission/sign-in screens stop delivery.
+
+After a restart, queues pause until you inspect Herdr and click **Continue queue**.
+A missed Working → Ready transition also requires that explicit action, rather
+than risking duplicate submissions. Changed sessions keep their old queue in
+**Saved drafts** for explicit recovery. Unknown delivery outcomes stop the queue;
+there are no automatic retries. Limits are 16 prompts per session, 128 total,
+sharing the existing draft text and image storage limits.
+
+A Codex chat created with **New Codex…** can instead show **Send update** while
+its native connection knows the active turn. This sends a structured update to
+that exact turn and waits for its acknowledgement. It never falls back to
+terminal keys or a different turn. **Queue instead** saves it for the next task.
+If that mode is unavailable, **Queue prompt**
+remains available. Queued terminal prompts start after the current task finishes;
+they do not steer it mid-task.
+
 ### True Codex tool approvals
 
 **New Codex…** opens a fresh Astra/medium chat in Herdr with native approval

@@ -65,6 +65,23 @@ final class CodexSocketTests:XCTestCase {
             op,data=read();assert op==1 and json.loads(data)=={'hello':'world'}
             send(b'check',op=9);send(b'{"value":"',fin=False);send(b'x'*200+b'"}',op=0)
             op,data=read();assert op==10 and data==b'check'
+        elif mode in ('steer','steer-disconnect'):
+            while True:
+                op,data=read()
+                if op==10:continue
+                row=json.loads(data);method=row.get('method')
+                if method=='initialize':send({'id':row['id'],'result':{}})
+                elif method=='thread/loaded/list':send({'id':row['id'],'result':{'data':['thread-A']}})
+                elif method=='thread/resume':send({'id':row['id'],'result':{'thread':{'id':'thread-A','status':{'type':'active','activeFlags':[]}}}})
+                elif method=='thread/turns/list':send({'id':row['id'],'result':{'data':[{'id':'active-A','status':'inProgress'}]}})
+                elif method=='turn/steer':
+                    p=row['params'];assert p['threadId']=='thread-A' and p['expectedTurnId']=='active-A' and p['clientUserMessageId']
+                    assert p['input'][0]=={'type':'text','text':'Synthetic follow-up only'}
+                    if mode=='steer-disconnect':c.close();break
+                    assert len(p['input'])==2 and p['input'][1]['type']=='localImage'
+                    with open(p['input'][1]['path'],'rb') as f:assert f.read(8)==bytes([137,80,78,71,13,10,26,10])
+                    send({'id':row['id'],'result':{'turnId':'active-A'}})
+                    send({'method':'turn/completed','params':{'threadId':'thread-A','turn':{'id':'active-A'}}})
         elif mode=='approvals':
             while True:
                 op,data=read()

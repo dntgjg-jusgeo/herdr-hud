@@ -52,4 +52,46 @@ final class DraftStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.save(invalid))
         XCTAssertEqual((try DraftStore(directory:url).load()["drafts"] as? [Row])?[0]["text"] as? String,"original")
     }
+    func queued(_ token: String, text: String = "Next task", status: String = "queued", images: [Row] = []) -> Row {
+        ["token":token,"text":text,"images":images,"status":status]
+    }
+    func queueSnapshot(_ queue: [Row], id: String = "exact-agent-identity", text: String = "") -> Row {
+        ["version":1,"drafts":[["id":id,"label":"Queued task","text":text,"images":[Row](),"uncertain":false,"keyUncertain":false,"queue":queue]]]
+    }
+    func testQueuedOnlySnapshotRoundTripPreservesFIFOAndPendingIntentBecomesUncertain() throws {
+        let url=folder();defer { try? FileManager.default.removeItem(at:url) }
+        let image=((snapshot()["drafts"] as! [Row])[0]["images"] as! [Row])[0]
+        let store=DraftStore(directory:url);_=try store.load()
+        try store.save(queueSnapshot([queued("first",status:"pending",images:[image]),queued("second")]))
+        let restored=try DraftStore(directory:url).load(),rows=restored["drafts"] as! [Row],queue=rows[0]["queue"] as! [Row]
+        XCTAssertEqual(restored["version"] as? Int,2)
+        XCTAssertEqual(rows[0]["text"] as? String,"");XCTAssertEqual(queue.map { $0["token"] as! String },["first","second"])
+        XCTAssertEqual(queue[0]["status"] as? String,"uncertain");XCTAssertEqual(queue[1]["status"] as? String,"queued")
+        XCTAssertEqual((queue[0]["images"] as? [Row])?[0]["data"] as? String,image["data"] as? String)
+    }
+    func testQueueBoundsAndDuplicateTokensShareTheDraftBudget() throws {
+        XCTAssertThrowsError(try DraftStore.validate(["version":true,"drafts":[Row]()]));XCTAssertThrowsError(try DraftStore.validate(["version":2.5,"drafts":[Row]()]))
+        XCTAssertThrowsError(try DraftStore.validate(queueSnapshot((0..<17).map { queued("entry-\($0)") })))
+        var duplicate=queueSnapshot([queued("same")]),rows=duplicate["drafts"] as! [Row]
+        var second=rows[0];second["id"]="another-exact-session";rows.append(second);duplicate["drafts"]=rows
+        XCTAssertThrowsError(try DraftStore.validate(duplicate))
+        let large=(0..<16).map { queued("large-\($0)",text:String(repeating:"x",count:60000)) }
+        var combined=queueSnapshot(large,text:String(repeating:"y",count:60000)),combinedRows=combined["drafts"] as! [Row]
+        combinedRows.append(["id":"claude-exact-session","label":"Claude","text":String(repeating:"z",count:60000),"images":[Row](),"uncertain":false,"keyUncertain":false]);combined["drafts"]=combinedRows
+        XCTAssertThrowsError(try DraftStore.validate(combined))
+        XCTAssertThrowsError(try DraftStore.validate(queueSnapshot([queued("empty",text:"")])))
+        XCTAssertThrowsError(try DraftStore.validate(queueSnapshot([queued("bad",status:"complete")])))
+    }
+    func testBackgroundAuthorizationRequiresExactSavedUncertainHeadAndPayload() throws {
+        let image=((snapshot()["drafts"] as! [Row])[0]["images"] as! [Row])[0]
+        let saved=queueSnapshot([queued("first",text:"Original follow-up",status:"pending",images:[image]),queued("second")])
+        let payload:[[String:Any]]=[["data":image["data"]!]]
+        XCTAssertNoThrow(try DraftStore.authorizeQueuedPrompt(saved,id:"exact-agent-identity",token:"first",text:"Original follow-up",attachments:payload))
+        for (id,token,text,images) in [("replacement","first","Original follow-up",payload),("exact-agent-identity","second","Original follow-up",payload),("exact-agent-identity","first","Changed",payload),("exact-agent-identity","first","Original follow-up",[Row]())] {
+            XCTAssertThrowsError(try DraftStore.authorizeQueuedPrompt(saved,id:id,token:token,text:text,attachments:images))
+        }
+        XCTAssertThrowsError(try DraftStore.authorizeQueuedPrompt(queueSnapshot([queued("queued")]),id:"exact-agent-identity",token:"queued",text:"Next task",attachments:nil))
+        XCTAssertThrowsError(try DraftStore.authorizeQueuedPrompt(saved,id:"exact-agent-identity",token:"first",text:"Original follow-up",attachments:[["data":"different"]]))
+    }
+
 }
