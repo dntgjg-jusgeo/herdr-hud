@@ -71,6 +71,9 @@ run the packaged app. Xcode command-line tools are needed to build from source.
 - **Command–Option–H:** toggle the agent panel.
 - **Command–Option–Shift–H:** hide or restore the whole HUD.
 - **Escape:** close the panel while keeping H visible.
+- The open panel takes application focus for typing, paste and dictation. Closing
+  it returns focus to the previous app when the HUD still has focus. H and alerts
+  remain passive overlays.
 - **Enter:** send a prompt to the selected ready agent.
 - **Control–Enter or Shift–Enter:** insert a new line (Command/Option–Enter also insert a new line).
 - The **H menu-bar item** has visibility, alternative shortcuts, launch-at-login,
@@ -212,7 +215,7 @@ output at 64 KiB, and has a 12-second deadline. Prompts are limited to 60 KB.
 
 ## Architecture
 
-- `Sources/HerdrHUD/App.swift`: AppKit nonactivating panels, fullscreen Spaces,
+- `Sources/HerdrHUD/App.swift`: AppKit composer and passive overlay panels, fullscreen Spaces,
   menu-bar controls, Carbon shortcuts, monitor positioning, and WebKit bridge.
 - `Sources/HerdrHUD/Transport.swift`: bounded process groups and native socket prompts.
 - `Sources/HerdrHUD/HC.swift`: macOS hc JSON-RPC discovery, checked reads and prompts.

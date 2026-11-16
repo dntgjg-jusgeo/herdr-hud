@@ -4,8 +4,28 @@ import Carbon
 import ServiceManagement
 
 final class OverlayPanel: NSPanel {
+    init(contentRect: NSRect) {
+        // The composer must own application focus so dictation/paste tools target
+        // its WebKit editor. Only the passive H button and alerts are nonactivating.
+        super.init(contentRect:contentRect,styleMask:[.borderless,.resizable],backing:.buffered,defer:false)
+    }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+func editorMenu() -> NSMenu {
+    let menu = NSMenu(title:"Edit")
+    for (title, action, key) in [
+        ("Undo", "undo:", "z"), ("Redo", "redo:", "Z"),
+        ("Cut", "cut:", "x"), ("Copy", "copy:", "c"),
+        ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")
+    ] {
+        let item = NSMenuItem(title:title,action:NSSelectorFromString(action),keyEquivalent:key)
+        // nil target routes through the focused WKWebView's responder chain.
+        item.target = nil
+        menu.addItem(item)
+    }
+    return menu
 }
 final class BubbleView: NSView {
     weak var app: HUDApp?
@@ -44,6 +64,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     var lastSnapshot: Row = [:], readBusy = false, selected = ""
     var promptIDs = Set<String>(), hotkeyWarning = ""
     var toast: NSPanel?, toastTimer: Timer?, toastHover = false
+    var previousApplication: NSRunningApplication?
     var shortcuts: [NSMenuItem] = []
     static let channel = Notification.Name("org.herdr.community.hud.control")
     var support: URL { FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("Herdr HUD") }
@@ -51,7 +72,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         NSApp.setActivationPolicy(.accessory)
         try? FileManager.default.createDirectory(at:support,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         visible = defaults.object(forKey:"visible") == nil || defaults.bool(forKey:"visible")
-        panel = OverlayPanel(contentRect:NSRect(x:100,y:100,width:940,height:650), styleMask:[.borderless,.nonactivatingPanel,.resizable], backing:.buffered,defer:false)
+        panel = OverlayPanel(contentRect:NSRect(x:100,y:100,width:940,height:650))
         configure(panel); panel.title = "Herdr HUD Agents"; panel.minSize = NSSize(width:640,height:430)
         let config = WKWebViewConfiguration()
         config.userContentController.add(self,name:"hud")
@@ -91,6 +112,15 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     }
     func menuItem(_ title: String, _ action: Selector) -> NSMenuItem { let item = NSMenuItem(title:title,action:action,keyEquivalent:""); item.target = self; return item }
     func buildMenu() {
+        let main = NSMenu()
+        let application = NSMenuItem(title:"Herdr HUD",action:nil,keyEquivalent:"")
+        let applicationMenu = NSMenu(title:"Herdr HUD")
+        let quitItem = menuItem("Quit Herdr HUD",#selector(quit))
+        quitItem.keyEquivalent = "q"; applicationMenu.addItem(quitItem)
+        application.submenu = applicationMenu; main.addItem(application)
+        let edit = NSMenuItem(title:"Edit",action:nil,keyEquivalent:"")
+        edit.submenu = editorMenu(); main.addItem(edit)
+        NSApp.mainMenu = main
         let menu = NSMenu()
         menu.addItem(menuItem("Open / close agents",#selector(togglePanel)))
         menu.addItem(menuItem("Show / hide H button",#selector(toggleVisibility)))
@@ -147,11 +177,22 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     }
     @objc func togglePanel() { if panelOpen { closePanel() } else { openPanel() } }
     func openPanel() {
+        if !panelOpen, let frontmost = NSWorkspace.shared.frontmostApplication,
+           frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousApplication = frontmost
+        }
         visible = true; defaults.set(true,forKey:"visible"); panelOpen = true
-        positionPanel(); bubble.orderFrontRegardless(); panel.makeKeyAndOrderFront(nil)
+        positionPanel(); bubble.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps:true); panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(web); hideToast(); emit("visibility",["open":true]); refresh(); diagnostics()
     }
-    func closePanel() { panelOpen = false; panel.orderOut(nil); emit("visibility",["open":false]); diagnostics() }
+    func closePanel() {
+        let restoreFocus = panelOpen && NSApp.isActive
+        panelOpen = false; panel.orderOut(nil); emit("visibility",["open":false])
+        if restoreFocus { previousApplication?.activate(options:[]) }
+        previousApplication = nil
+        diagnostics()
+    }
     func screenForBubble() -> NSScreen { NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x:bubble.frame.midX,y:bubble.frame.midY)) }) ?? NSScreen.screens.first! }
     func screenKey(_ screen: NSScreen) -> String { String((screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0) }
     func restorePosition() {
@@ -245,7 +286,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     func hideToast() { toastTimer?.invalidate(); toast?.orderOut(nil); toast = nil; toastHover = false }
     func diagnostics() {
         guard bubble != nil else { return }
-        let data: Row = ["pid":ProcessInfo.processInfo.processIdentifier,"visible":visible,"panelOpen":panelOpen,"screens":NSScreen.screens.count,"panelKey":panel.isKeyWindow,"resourceRoot":HUDResources.root.path,"bubbleFrame":NSStringFromRect(bubble.frame),"panelFrame":NSStringFromRect(panel.frame),"machines":lastSnapshot["machines"] ?? [],"agentCount":(lastSnapshot["agents"] as? [Row])?.count ?? 0,"shortcutWarning":hotkeyWarning]
+        let data: Row = ["pid":ProcessInfo.processInfo.processIdentifier,"visible":visible,"panelOpen":panelOpen,"screens":NSScreen.screens.count,"panelKey":panel.isKeyWindow,"appActive":NSApp.isActive,"panelNonactivating":panel.styleMask.contains(.nonactivatingPanel),"resourceRoot":HUDResources.root.path,"bubbleFrame":NSStringFromRect(bubble.frame),"panelFrame":NSStringFromRect(panel.frame),"machines":lastSnapshot["machines"] ?? [],"agentCount":(lastSnapshot["agents"] as? [Row])?.count ?? 0,"shortcutWarning":hotkeyWarning]
         try? encode(data).write(to:support.appendingPathComponent("diagnostics.json"),atomically:true,encoding:.utf8)
     }
     @objc func control(_ notification: Notification) {

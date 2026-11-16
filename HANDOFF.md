@@ -317,3 +317,20 @@ and saved routing changes invalidate the selected card. Windows remains legacy.
 Tests must use controlled transports or an explicitly isolated hc core, never
 the user's Claude/Codex terminals. Local packaging/install and live read-only UI
 acceptance are separate from source verification.
+
+## macOS composer focus and paste — November 16, 2026
+
+The agents panel now activates the accessory app when opened and has a standard
+responder-chain Edit menu for WebKit paste and editing shortcuts. Previously the
+composer was a nonactivating panel and the app had no main menu, so external
+dictation/paste tools could target the prior app or fail to dispatch Paste.
+Only H and alerts remain nonactivating. Closing returns focus to the app that was
+frontmost before opening, provided the HUD still owns application focus.
+
+EditorTests checks the composer window style and standard editing selectors.
+Diagnostics add appActive and panelNonactivating without recording prompt text.
+Installed macOS build passed live paste and select-all/delete checks without
+sending a prompt. The user confirmed Wispr Flow dictation works in the HUD.
+Swift tests passed (38 tests, one opt-in integration skipped, zero failures),
+along with 19 JavaScript tests and five Python tests. Fullscreen game focus
+remains unverified; window configuration tests do not establish that behavior.
