@@ -45,15 +45,15 @@ final class DraftStore {
     }
     static func validate(_ value: Any) throws -> Row {
         func invalid() -> HUDError { HUDError("Draft snapshot is invalid or exceeds its storage limit. Existing drafts and queued prompts have been retained.") }
-        guard let snapshot = value as? Row, let version = snapshot["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), [1.0,2.0,3.0].contains(version.doubleValue),
+        guard let snapshot = value as? Row, let version = snapshot["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), [1.0,2.0,3.0,4.0].contains(version.doubleValue),
               let rows = snapshot["drafts"] as? [Row], rows.count <= maximumDrafts else { throw invalid() }
-        var result:[Row] = [], ids = Set<String>(), tokens = Set<String>(), totalText = 0, totalImages = 0, queueCount = 0, hasVideo=false
+        var result:[Row] = [], ids = Set<String>(), tokens = Set<String>(), totalText = 0, totalImages = 0, queueCount = 0, hasVideo=false, hasMarkdown=false
         var videos:[String:Row]=[:],totalVideos=0,totalPosters=0
         func parsedImages(_ images: [Row]) throws -> [Row] {
             var safeImages:[Row] = []
             for original in images {
                 if original["kind"] as? String == "video" {
-                    guard version.doubleValue==3 else{throw invalid()}
+                    guard version.doubleValue>=3 else{throw invalid()}
                     let safe=try VideoAttachments.validateReference(original),token=safe["token"] as! String
                     totalPosters+=(safe["poster"] as! String).utf8.count
                     guard totalPosters<=maximumPosterBytes else{throw invalid()}
@@ -61,6 +61,13 @@ final class DraftStore {
                     else {videos[token]=safe;totalVideos+=safe["bytes"] as! Int}
                     guard totalVideos<=VideoAttachments.maximumCacheBytes,videos.count<=VideoAttachments.maximumAssets else{throw invalid()}
                     hasVideo=true;safeImages.append(safe);continue
+                }
+                if original["kind"] as? String == "markdown" {
+                    guard version.doubleValue >= 4 else { throw invalid() }
+                    let safe = try MarkdownAttachment.validate(original)
+                    totalText += (safe["text"] as! String).utf8.count
+                    guard totalText <= maximumTotalTextBytes else { throw invalid() }
+                    hasMarkdown = true; safeImages.append(safe); continue
                 }
                 guard original["kind"] == nil || original["kind"] as? String == "image",let image=try ImageAttachment.parse([original]).first else{throw invalid()}
                 totalImages += image.data.count
@@ -100,7 +107,7 @@ final class DraftStore {
                 if !queue.isEmpty { normalized["queue"] = queue };result.append(normalized)
             }
         }
-        return ["version":hasVideo ? 3:2,"drafts":result]
+        return ["version":hasMarkdown ? 4 : (hasVideo ? 3:2),"drafts":result]
     }
     /// Background delivery is authorized only by the exact persisted FIFO head.
     /// The caller also consumes this token once per app incarnation before IO.
@@ -117,6 +124,8 @@ final class DraftStore {
         for (image,saved) in zip(supplied,expected) {
             if saved["kind"] as? String == "video" {
                 guard let actual=try? VideoAttachments.validateReference(image),NSDictionary(dictionary:actual).isEqual(to:saved) else{throw refused()}
+            } else if saved["kind"] as? String == "markdown" {
+                guard let actual = try? MarkdownAttachment.validate(image), NSDictionary(dictionary:actual).isEqual(to:saved) else { throw refused() }
             } else {guard image["kind"] == nil || image["kind"] as? String == "image",let data = image["data"] as? String,data == saved["data"] as? String else { throw refused() }}
         }
     }

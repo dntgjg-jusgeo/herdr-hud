@@ -16,13 +16,19 @@
     return {key,bytes:size,name:value.name,data,url:'data:'+mime+';base64,'+data};
   }
   function serializeAttachment(value){
+    if(value?.kind==='markdown')return {kind:'markdown',name:value.name,text:value.text,bytes:value.bytes};
     if(value?.kind==='video')return {kind:'video',token:value.token,name:value.name,bytes:value.bytes,poster:value.poster,duration:value.duration,width:value.width,height:value.height};
     return {data:value?.data,name:value?.name};
   }
   function attachment(value,key,version,videoRefs,posterBudget){
-    if(value?.kind!=='video')return image(value,key);
+    if(value?.kind==='markdown'){
+      const v=serializeAttachment(value);
+      if(version!==4||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/^.+[.](md|markdown)$/i.test(v.name)||/[\p{Cc}\p{Cf}]/u.test(v.name)||typeof v.text!=='string'||v.text.includes('\0')||!Number.isSafeInteger(v.bytes)||v.bytes!==bytes(v.text)||v.bytes>16384)fail();
+      return {...v,key};
+    }
+    if(value?.kind!=='video'){if(value?.kind!==undefined&&value.kind!=='image')fail();return image(value,key);}
     const v=serializeAttachment(value),prefix='data:image/jpeg;base64,';
-    if(version!==3||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/\.mp4$/i.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<=0||v.bytes>limits.videoBytes||typeof v.poster!=='string'||v.poster.length>limits.posterLength||!v.poster.startsWith(prefix)||typeof v.duration!=='number'||!Number.isFinite(v.duration)||v.duration<=0||v.duration>86400||![v.width,v.height].every(n=>Number.isInteger(n)&&n>0&&n<=16384)||v.width*v.height>40000000)fail();
+    if(![3,4].includes(version)||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/\.mp4$/i.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<=0||v.bytes>limits.videoBytes||typeof v.poster!=='string'||v.poster.length>limits.posterLength||!v.poster.startsWith(prefix)||typeof v.duration!=='number'||!Number.isFinite(v.duration)||v.duration<=0||v.duration>86400||![v.width,v.height].every(n=>Number.isInteger(n)&&n>0&&n<=16384)||v.width*v.height>40000000)fail();
     posterBudget.total+=v.poster.length;if(posterBudget.total>limits.totalPosters)fail();
     const data=v.poster.slice(prefix.length);
     if(!data.length||data.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(data))fail();
@@ -34,7 +40,7 @@
     return {...v,key,url:v.poster};
   }
   function restore(value){
-    if(!value||![1,2,3].includes(value.version)||!Array.isArray(value.drafts)||value.drafts.length>limits.count)fail();
+    if(!value||![1,2,3,4].includes(value.version)||!Array.isArray(value.drafts)||value.drafts.length>limits.count)fail();
     const state={drafts:new Map(),attachments:new Map(),uncertain:new Set(),keyUncertain:new Set(),labels:new Map(),queues:new Map()};
     const ids=new Set(),tokens=new Set(),videoRefs=new Map(),posterBudget={total:0};let textTotal=0,imageTotal=0,key=0,queueCount=0;
     for(const row of value.drafts){
@@ -42,7 +48,8 @@
       const label=row.label===undefined?'Recovered draft':row.label;
       if(typeof label!=='string'||[...label].length>200||bytes(label)>800)fail();
       ids.add(row.id);textTotal+=bytes(row.text);if(textTotal>limits.totalText)fail();
-      const images=row.images.map(item=>attachment(item,++key,value.version,videoRefs,posterBudget));imageTotal+=images.reduce((n,item)=>n+(item.kind==='video'?0:item.bytes),0);if(imageTotal>limits.totalImages)fail();
+      const images=row.images.map(item=>attachment(item,++key,value.version,videoRefs,posterBudget));imageTotal+=images.reduce((n,item)=>n+(item.kind==='video'||item.kind==='markdown'?0:item.bytes),0);if(imageTotal>limits.totalImages)fail();
+      textTotal+=images.filter(x=>x.kind==='markdown').reduce((n,x)=>n+x.bytes,0);if(textTotal>limits.totalText)fail();
       state.drafts.set(row.id,row.text);state.attachments.set(row.id,images);state.labels.set(row.id,label);
       if(row.uncertain)state.uncertain.add(row.id);if(row.keyUncertain)state.keyUncertain.add(row.id);
       const queued=row.queue===undefined?[]:row.queue;
@@ -52,7 +59,7 @@
         tokens.add(item.token);queueCount++;if(queueCount>limits.queueCount)fail();
         const images=item.images.map(attachmentValue=>attachment(attachmentValue,++key,value.version,videoRefs,posterBudget));
         if(!item.text.trim()&&!images.length)fail();
-        textTotal+=bytes(item.text);imageTotal+=images.reduce((n,value)=>n+(value.kind==='video'?0:value.bytes),0);
+        textTotal+=bytes(item.text)+images.filter(x=>x.kind==='markdown').reduce((n,x)=>n+x.bytes,0);imageTotal+=images.reduce((n,value)=>n+(value.kind==='video'||value.kind==='markdown'?0:value.bytes),0);
         if(textTotal>limits.totalText||imageTotal>limits.totalImages)fail();
         return {token:item.token,text:item.text,images,status:item.status==='pending'?'uncertain':item.status};
       });
@@ -71,7 +78,8 @@
       if(queue.length)row.queue=queue;rows.push(row);
     }
     const hasVideo=rows.some(row=>row.images.some(item=>item.kind==='video')||(row.queue||[]).some(item=>item.images.some(image=>image.kind==='video')));
-    const value={version:hasVideo?3:2,drafts:rows};restore(value);return value;
+    const hasMarkdown=rows.some(row=>row.images.some(x=>x.kind==='markdown')||(row.queue||[]).some(item=>item.images.some(x=>x.kind==='markdown')));
+    const value={version:hasMarkdown?4:hasVideo?3:2,drafts:rows};restore(value);return value;
   }
   function mergeRestored(saved,current,touched=new Set()){
     const merged=restore(saved);

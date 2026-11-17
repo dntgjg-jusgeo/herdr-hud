@@ -9,7 +9,7 @@ function harness(){
  class FileReader{readAsDataURL(file){reads.push(()=>{this.result='data:image/png;base64,YWJj';this.onload();});}}
  class Image{set src(v){this.naturalWidth=4;this.naturalHeight=4;this.onload();}}
  const HUDModel=require('../Sources/HerdrHUD/Resources/model.js');
- const context=vm.createContext({window,document,FileReader,Image,HUDModel,setInterval(){},setTimeout,clearTimeout,console});vm.runInContext(source,context);
+ const context=vm.createContext({window,document,FileReader,Image,TextEncoder,TextDecoder,HUDModel,setInterval(){},setTimeout,clearTimeout,console});vm.runInContext(source,context);
  vm.runInContext("supportsAttachments=true;agents=[{id:'A',online:true,can_attach:true,agent_status:'idle',agent:'codex'},{id:'B',online:true,can_attach:true,agent_status:'idle',agent:'claude'}];selected='A'",context);
  return {context,messages,reads,listeners,$:id=>document.getElementById(id),eval:s=>vm.runInContext(s,context)};
 }
@@ -81,4 +81,21 @@ test('MP4 clipboard files suppress path text and request bounded native import',
  h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',type:'video/mp4',getAsFile:()=>file}],files:[file],getData:()=>'/private/example/clip.mp4'}});
  assert.equal(prevented,true);assert.equal(h.$('prompt').value,'');const started=h.messages.find(m=>m.op==='videoBegin');assert.ok(started);assert.equal(h.messages.filter(m=>m.op==='videoBegin').length,1);
  h.context.window.receive({type:'videoBegin',data:{requestID:started.requestID,error:'fixture refusal'}});await tick();assert.equal(h.eval("attachmentLoads.get('A')"),0);assert.equal(h.messages.some(m=>m.op==='prompt'),false);
+});
+
+test('Markdown drop stages exact UTF-8 contents with safe preview and captured identity',async()=>{
+ const h=harness();h.eval("supportsMarkdown=true");const text='# Notes\n<script>alert(1)</script>\nCafé';const bytes=new TextEncoder().encode(text);let finish;
+ const file={name:'notes.md',type:'text/markdown',size:bytes.length,arrayBuffer:()=>new Promise(resolve=>{finish=()=>resolve(bytes.buffer);})};let prevented=false;
+ h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[file]}});
+ assert.equal(prevented,true);h.eval("selected='B'");finish();await tick();
+ assert.equal(h.eval("imagesFor('A')[0].text"),text);assert.equal(h.eval("imagesFor('B').length"),0);
+ h.eval("selected='A';renderHeader()");h.$('attachments').children[0].children[0].click();
+ assert.equal(h.$('attachment-preview-text').textContent,text);assert.equal(h.$('attachment-preview-image').hidden,true);
+ assert.equal(h.$('prompt').value,'');assert.equal(h.messages.some(m=>m.op==='prompt'),false);
+});
+test('Markdown rejects oversized and non-UTF8 files without staging',async()=>{
+ const h=harness();h.eval("supportsMarkdown=true");
+ await h.context.window;h.eval("stageMarkdown([{name:'big.md',size:16385}])");assert.equal(h.eval("imagesFor('A').length"),0);
+ h.context.bad={name:'bad.md',size:1,arrayBuffer:async()=>new Uint8Array([255]).buffer};await h.eval('stageMarkdown([bad])');
+ assert.equal(h.eval("imagesFor('A').length"),0);assert.equal(h.eval("attachmentLoads.get('A')"),0);
 });

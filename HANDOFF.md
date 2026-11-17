@@ -569,3 +569,14 @@ Orca catalog architecture.input_modalities is retained as vision; new OpenCode
 configuration declares capabilities.input=[text,image] only when reported. Adapter
 checks actual server model capabilities before dispatching images; missing/unknown
 vision refuses before POST. Existing sessions are not silently restarted.
+
+## Markdown attachments — November 16, 2026
+
+Browser File drop/picker reads .md/.markdown as strict UTF-8 (16KiB), preserves
+exact selected session before async read and validates a candidate snapshot before
+mutation. Chips preview with textContent only. Native MarkdownAttachment validates
+name/content/byte length independently. VideoMedia incorporates JSON-quoted text
+before existing checked transport; Markdown-only sends require no image capability.
+Snapshot v4 is written only when Markdown exists, reads v1–v4, counts contents
+against the total text budget and compares exact queued attachment payloads.
+No new cache, network service or model test prompt is needed.

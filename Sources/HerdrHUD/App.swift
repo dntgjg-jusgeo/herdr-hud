@@ -285,7 +285,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"markdownAttachmentsSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
             if CommandLine.arguments.contains("--orca-models") {openPanel();emit("openOrcaModels",[:])}
         case "orcaModels":
             guard client.usesHC,panelOpen,!requestID.isEmpty else { emit(operation,["requestID":requestID,"error":"Open the HUD to load OrcaRouter models."]);return }
@@ -589,7 +589,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard attachments == nil || attachments is [Row] else{throw HUDError("Invalid attachments.")}
         let items=attachments as? [Row] ?? [];guard items.count<=3 else{throw HUDError("Attach up to three files.")}
         let videos=items.filter{$0["kind"] as? String == "video"}
-        guard videos.isEmpty || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("MP4 attachments require a local Claude, Codex or managed OpenCode chat.")}
+        guard !items.contains(where:{["video","markdown"].contains($0["kind"] as? String ?? "")}) || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("File attachments require a local Claude, Codex or managed OpenCode chat.")}
         if !videos.isEmpty {
             if row["agent"] as? String == "opencode" {
                 guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("Open this model through the HUD OrcaRouter picker first.")}
@@ -597,7 +597,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             }
             DispatchQueue.main.async {self.emit("notice",["message":"Preparing video frames and local speech transcript…"])}
         }
-        if videos.isEmpty {completion(.success((message,items)));return}
+        if videos.isEmpty {completion(Result {try VideoMedia.prepare(message:message,items:items,resolve:{_ in throw HUDError("Unexpected video reference.")})});return}
         mediaPreparation.async {
             let prepared=Result {try VideoMedia.prepare(message:message,items:items,resolve:{item in
                 try self.videoWork.sync {try self.videoStore.reference(item)}
@@ -728,9 +728,9 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
         guard frame.isMainFrame, panelOpen else { completionHandler(nil); return }
         let picker = NSOpenPanel()
-        picker.title = "Attach images or MP4 videos (up to 3 files)"
+        picker.title = "Attach images, Markdown or MP4 videos (up to 3 files)"
         picker.canChooseDirectories = false; picker.canChooseFiles = true; picker.allowsMultipleSelection = true
-        picker.allowedContentTypes = [.png,.jpeg,.gif,UTType(filenameExtension:"webp") ?? .image,.mpeg4Movie]
+        picker.allowedContentTypes = [.png,.jpeg,.gif,UTType(filenameExtension:"webp") ?? .image,.mpeg4Movie,UTType(filenameExtension:"md") ?? .plainText,UTType(filenameExtension:"markdown") ?? .plainText]
         picker.beginSheetModal(for:panel) { response in
             completionHandler(response == .OK ? picker.urls : nil)
         }

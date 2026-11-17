@@ -54,3 +54,9 @@ test('video queue references survive and equality checks token and metadata',()=
  const current=state(new Map([['codex',[{token:'q',text:'',images:[image(),{...video,token:'11234567-89ab-cdef-0123-456789abcdef'}],status:'queued'}]]]));
  assert.throws(()=>D.mergeRestored(saved,current));
 });
+
+test('Markdown survives queued prompt round trip and mismatched content is rejected',()=>{
+ const md={kind:'markdown',name:'notes.md',text:'# Hello',bytes:7},queues=new Map();Q.enqueue(queues,'codex',{token:'md-q',text:'Review',images:[md]});
+ const saved=D.snapshot(state(queues));assert.equal(saved.version,4);assert.equal(D.restore(saved).queues.get('codex')[0].images[0].text,'# Hello');
+ const current=state(new Map([['codex',[{token:'md-q',text:'Review',images:[{...md,text:'# Other'}],status:'queued'}]]]));assert.throws(()=>D.mergeRestored(saved,current));
+});

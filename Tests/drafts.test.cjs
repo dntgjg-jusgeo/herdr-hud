@@ -57,3 +57,12 @@ test('repeated posters across composer and queue are bounded before persistence'
  assert.throws(()=>D.snapshot(accepted));
  for(const patch of [{name:'clip.mov'},{name:'clip\n.mp4'},{width:1.5},{height:16385},{width:8000,height:8000},{duration:86401}])assert.throws(()=>D.restore({version:3,drafts:[row({images:[{...video(),...patch}]})]}));
 });
+
+test('Markdown uses v4, round trips exact UTF8 and shares aggregate text budget',()=>{
+ const text='# Café\n<script>not executed</script>',md={kind:'markdown',name:'notes.md',text,bytes:Buffer.byteLength(text)};
+ const restored=D.restore({version:4,drafts:[row({images:[md]})]});assert.deepEqual(D.snapshot(restored).drafts[0].images,[md]);assert.equal(D.snapshot(restored).version,4);
+ assert.throws(()=>D.restore({version:3,drafts:[row({images:[md]})]}));
+ for(const patch of [{bytes:1},{name:'../x.md'},{name:'x.exe'},{text:'bad\0',bytes:4},{text:'x'.repeat(16385),bytes:16385}])assert.throws(()=>D.restore({version:4,drafts:[row({images:[{...md,...patch}]})]}));
+ const large={kind:'markdown',name:'large.md',text:'x'.repeat(16384),bytes:16384};
+ assert.throws(()=>D.restore({version:4,drafts:Array.from({length:65},(_,i)=>row({id:String(i),text:'',images:[large]}))}));
+});

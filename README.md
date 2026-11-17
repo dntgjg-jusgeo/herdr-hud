@@ -500,3 +500,14 @@ draft and images and requires inspection in Herdr before another attempt. Upload
 files live until hc removes the terminal, including files from interrupted sends.
 Remote, legacy Herdr, and Windows attachments are unavailable. Text prompting and
 dictation continue to work normally.
+
+### Markdown attachments on macOS
+
+Drop `.md` or `.markdown` files into the HUD, or choose them with **Attach files**.
+UTF-8 files up to 16 KB each share the three-file limit with images and videos.
+A filename chip opens a plain-text preview; HTML and links are not executed.
+On Send, the full text is included as quoted attachment content for local Claude,
+Codex or managed OpenCode. A vision model is not needed for Markdown alone.
+Combined oversized prompts are refused without sending or truncating content.
+Markdown attachments survive restart and queued prompts in snapshot version 4;
+older builds refuse these snapshots rather than dropping files.
