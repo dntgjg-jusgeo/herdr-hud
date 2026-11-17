@@ -622,3 +622,21 @@ text and red triangles, tests actual Vision recognition and injected eight-page
 coverage, deadline/overflow failures, artifact permissions and symlink refusal.
 Set HERDR_PDF_ANALYSIS_FIXTURE_DIR to export sheet.jpg, material.txt, transcript.txt,
 fixture.pdf and ground-truth.txt for isolated agent checks; ordinary tests clean up.
+
+## Word attachments — November 16, 2026
+
+WordAttachments stores immutable checked DOCX copies, hashes and opaque references.
+WordAnalysis validates OOXML ZIP/XML without extracting paths or resolving links,
+preserves table markers and auxiliary text parts, and supplies a bounded embedded
+image overview plus full private text and original paths. WordPreview uses native
+QLPreviewView. App import/preview, VideoWebView Finder NSURL paste/drop and shared
+UI picker/drop/paste all recognize .docx. Ordinary pasted path text remains text.
+Draft snapshots write v6 when Word is present and accept v1–v6. Word references
+have independent 256MB/128-token aggregate accounting and exact queue binding.
+Preparation runs on mediaPreparation; artifact writes use videoWork. Existing
+identity/readiness checks and uncertain-delivery guards remain in place.
+
+Word text-only preparation yields no images. Existing OpenCode image capability
+checks reject documents with an image overview on text-only models. Windows does
+not advertise Word support. Synthetic fixtures and isolated agent verification
+remain outside the repo; never use existing user chats for send tests.

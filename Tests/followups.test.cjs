@@ -65,3 +65,8 @@ test('PDF queue references retain exact token and page metadata',()=>{
  Q.enqueue(queues,'codex',{token:'pdf-q',text:'Review',images:[pdf]});const saved=D.snapshot(state(queues));assert.equal(saved.version,5);assert.equal(D.restore(saved).queues.get('codex')[0].images[0].pages,2);
  const current=state(new Map([['codex',[{token:'pdf-q',text:'Review',images:[{...pdf,pages:3}],status:'queued'}]]]));assert.throws(()=>D.mergeRestored(saved,current));
 });
+test('Word queue roundtrip binds document bytes and token exactly',()=>{
+ const word={kind:'word',token:'01234567-89ab-cdef-0123-456789abcdef',name:'report.docx',bytes:100},queues=new Map();
+ Q.enqueue(queues,'codex',{token:'word-q',text:'Review',images:[word]});const saved=D.snapshot(state(queues));assert.equal(saved.version,6);assert.equal(D.restore(saved).queues.get('codex')[0].images[0].name,'report.docx');
+ const current=state(new Map([['codex',[{token:'word-q',text:'Review',images:[{...word,bytes:101}],status:'queued'}]]]));assert.throws(()=>D.mergeRestored(saved,current));
+});

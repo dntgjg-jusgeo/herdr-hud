@@ -74,3 +74,11 @@ test('PDF references use v5 and reject changed metadata and malformed bounds',()
  for(const patch of [{pages:0},{pages:201},{bytes:10485761},{token:'../file'},{name:'../guide.pdf'}])assert.throws(()=>D.restore({version:5,drafts:[row({images:[{...pdf,...patch}]})]}));
  assert.throws(()=>D.restore({version:5,drafts:[row({images:[pdf,{...pdf,pages:3}]})]}));
 });
+test('Word v6 references survive restart with PDF and validate exact metadata',()=>{
+ const word={kind:'word',token:'01234567-89ab-cdef-0123-456789abcdef',name:'report.docx',bytes:100};
+ const pdf={kind:'pdf',token:'01234567-89ab-cdef-0123-456789abcdef',name:'guide.pdf',bytes:100,pages:2};
+ const v={version:6,drafts:[row({images:[word,pdf]})]},restored=D.restore(v);
+ assert.equal(D.snapshot(restored).version,6);assert.deepEqual(D.snapshot(restored).drafts[0].images,[word,pdf]);assert.throws(()=>D.restore({...v,version:5}));
+ for(const patch of [{bytes:0},{bytes:10485761},{token:'../file'},{name:'../report.docx'},{name:'.docx'},{name:'report.docm'}])assert.throws(()=>D.restore({version:6,drafts:[row({images:[{...word,...patch}]})]}));
+ assert.throws(()=>D.restore({version:6,drafts:[row({images:[word,{...word,bytes:101}]})]}));
+});

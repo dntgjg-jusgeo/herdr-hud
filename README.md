@@ -182,6 +182,34 @@ text is kept privately alongside the PDF within its existing 256 MB cache budget
 the prompt includes a 12 KB excerpt and explicitly marks truncation. No OCR engine,
 model download or cloud OCR service is needed. Remote PDF attachments are unsupported.
 
+### Word attachments on macOS
+
+Drag a `.docx` into the HUD, copy it in Finder and press **Command-V** in the
+composer, or choose it with **Attach files**. Click its DOCX chip to preview the
+original document in a native read-only Quick Look window; Command-W closes it.
+Word files share the three-attachment limit and can be up to 10 MB each.
+Private local copies survive moving the original, draft recovery and queued
+prompts. Drafts containing Word documents use snapshot version 6; earlier
+snapshot formats remain readable.
+
+On Send, local Claude, Codex and managed OpenCode receive the document's body,
+table row/cell boundaries and available headers, footers, notes and comments.
+The HUD includes a quoted excerpt plus the full structured-text artifact and
+original DOCX paths. Up to six supported embedded raster images appear in one
+labeled overview; OpenCode needs a Vision model when that overview is present.
+Text-only documents do not require Vision. The overview is not a page rendering:
+exact layout, image placement, merged cells, charts and SmartArt need closer
+inspection of the original. Revisions and field instructions are labeled rather
+than evaluated. External hyperlinks are not fetched.
+
+Encrypted, macro-enabled and externally linked media/template packages are
+unsupported. Archives are checked before preview or sending, with 512 entries,
+8 MB per entry and 32 MB expanded limits. Full extracted text is limited to
+2 MB; the prompt excerpt to 12 KB. The private Word cache is capped at
+256 MB/128 documents. Errors retain drafts without sending a partial result.
+No Word installation or document-conversion service is required. `.doc`, `.docm`
+and remote Word attachments are not supported.
+
 ### OrcaRouter models through OpenCode
 
 On macOS, **Orca models** appears inside a managed OrcaRouter OpenCode conversation and opens a searchable, collapsible model picker. It stays hidden for Claude, Codex and other OpenCode agents. Herdr’s OrcaRouter launcher can still open the picker to create the first chat. Select a

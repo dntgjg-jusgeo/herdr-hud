@@ -116,3 +116,27 @@ test('PDF drop imports privately then preview requests native PDF window',async(
 test('PDF imports refuse oversized files before reading',()=>{
  const h=harness();h.eval('supportsPDF=true;stagePDFs([{name:"big.pdf",size:10485761}])');assert.equal(h.reads.length,0);assert.equal(h.messages.some(x=>x.op==='pdfImport'),false);
 });
+test('Word drop imports privately and click opens native preview without sending',async()=>{
+ const h=harness();h.eval('supportsWord=true');let prevented=false;
+ h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{name:'report.docx',type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',size:100}]}});assert.equal(prevented,true);
+ h.reads[0]();await tick();const request=h.messages.find(x=>x.op==='wordImport');assert.ok(request);
+ h.context.window.receive({type:'wordImport',data:{requestID:request.requestID,attachment:{kind:'word',token:'01234567-89ab-cdef-0123-456789abcdef',name:'report.docx',bytes:100}}});await tick();
+ assert.equal(h.eval("imagesFor('A')[0].kind"),'word');h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,'openWord');assert.equal(h.$('prompt').value,'');assert.equal(h.messages.some(x=>x.op==='prompt'),false);
+});
+test('Word paste consumes file instead of inserting Finder path',async()=>{
+ const h=harness();h.eval('supportsWord=true');const file={name:'report.docx',type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',size:100};let prevented=false;
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',getAsFile:()=>file}],files:[file],getData:()=>'/Users/example/report.docx'}});
+ assert.equal(prevented,true);assert.equal(h.reads.length,1);assert.equal(h.$('prompt').value,'');
+ h.reads[0]();await tick();const request=h.messages.find(x=>x.op==='wordImport');assert.ok(request);
+ h.context.window.receive({type:'wordImport',data:{requestID:request.requestID,error:'synthetic failure'}});await tick();assert.equal(h.eval("imagesFor('A').length"),0);assert.equal(h.eval("attachmentLoads.get('A')"),0);
+});
+test('native Finder Word offer preserves captured agent and previews the file',async()=>{
+ const h=harness();h.eval('supportsVideos=true;supportsWord=true');h.context.window.receive({type:'videoOffer',data:{id:'A',offer:'finder-word',count:1}});await tick();
+ const request=h.messages.find(x=>x.op==='videoImport');assert.ok(request);h.eval("selected='B'");
+ h.context.window.receive({type:'videoImport',data:{requestID:request.requestID,id:'A',ok:true,attachments:[{kind:'word',token:'01234567-89ab-cdef-0123-456789abcdef',name:'report.docx',bytes:100}]}});await tick();
+ assert.equal(h.eval("imagesFor('A')[0].kind"),'word');assert.equal(h.eval("imagesFor('B').length"),0);assert.equal(h.messages.some(x=>x.op==='prompt'),false);
+});
+test('Word imports refuse oversized and unsupported files before reading',()=>{
+ const h=harness();h.eval('stageWords([{name:"report.docx",size:100}])');assert.equal(h.reads.length,0);
+ h.eval('supportsWord=true;stageWords([{name:"big.docx",size:10485761}])');assert.equal(h.reads.length,0);
+});
