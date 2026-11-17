@@ -585,3 +585,13 @@ Finder copy/paste now recognizes real .md/.markdown file URLs (including mixed
 MP4+Markdown selections) through the existing native offer handshake. Plain pasted
 path strings remain ordinary text. Native reads reject symlinks/nonregular files,
 invalid UTF-8, changed content and >16KiB before the draft receives the attachment.
+
+## PDF attachments — November 16, 2026
+
+PDFAttachments owns private checked/hash-verified copies (10MiB,200pages,
+256MiBcache/128assets). Drafts/FIFO store opaque PDF references in version5 and
+validate exact metadata; older versions remain readable. Native FinderURL offers
+include PDF and browserdrop/picker uses bounded base64 import. Preview uses
+PDFKit on a full validated private copy. Sending resolves again, extracts bounded
+page-marked text plus local PDF reference, and retains existing transport guards.
+No OCR, remote PDF transport, model fallback or automatic sending is introduced.

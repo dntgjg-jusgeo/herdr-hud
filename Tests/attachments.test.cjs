@@ -106,3 +106,13 @@ test('native Finder Markdown paste offer creates the same previewable attachment
  assert.equal(h.eval("imagesFor('A')[0].kind"),'markdown');assert.equal(h.eval("imagesFor('A')[0].text"),'# Pasted');assert.equal(h.$('prompt').value,'');assert.equal(h.eval("attachmentLoads.get('A')"),0);
  assert.equal(h.messages.some(x=>x.op==='prompt'),false);
 });
+test('PDF drop imports privately then preview requests native PDF window',async()=>{
+ const h=harness();h.eval('supportsPDF=true');let prevented=false;
+ h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{name:'guide.pdf',type:'application/pdf',size:100}]}});assert.equal(prevented,true);
+ h.reads[0]();await tick();const request=h.messages.find(x=>x.op==='pdfImport');assert.ok(request);assert.equal(h.messages.some(x=>x.op==='prompt'),false);
+ h.context.window.receive({type:'pdfImport',data:{requestID:request.requestID,attachment:{kind:'pdf',token:'01234567-89ab-cdef-0123-456789abcdef',name:'guide.pdf',bytes:100,pages:2}}});await tick();
+ assert.equal(h.eval("imagesFor('A')[0].kind"),'pdf');h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,'openPDF');assert.equal(h.$('prompt').value,'');
+});
+test('PDF imports refuse oversized files before reading',()=>{
+ const h=harness();h.eval('supportsPDF=true;stagePDFs([{name:"big.pdf",size:10485761}])');assert.equal(h.reads.length,0);assert.equal(h.messages.some(x=>x.op==='pdfImport'),false);
+});

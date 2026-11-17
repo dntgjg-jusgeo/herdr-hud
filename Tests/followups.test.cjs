@@ -60,3 +60,8 @@ test('Markdown survives queued prompt round trip and mismatched content is rejec
  const saved=D.snapshot(state(queues));assert.equal(saved.version,4);assert.equal(D.restore(saved).queues.get('codex')[0].images[0].text,'# Hello');
  const current=state(new Map([['codex',[{token:'md-q',text:'Review',images:[{...md,text:'# Other'}],status:'queued'}]]]));assert.throws(()=>D.mergeRestored(saved,current));
 });
+test('PDF queue references retain exact token and page metadata',()=>{
+ const pdf={kind:'pdf',token:'01234567-89ab-cdef-0123-456789abcdef',name:'guide.pdf',bytes:100,pages:2},queues=new Map();
+ Q.enqueue(queues,'codex',{token:'pdf-q',text:'Review',images:[pdf]});const saved=D.snapshot(state(queues));assert.equal(saved.version,5);assert.equal(D.restore(saved).queues.get('codex')[0].images[0].pages,2);
+ const current=state(new Map([['codex',[{token:'pdf-q',text:'Review',images:[{...pdf,pages:3}],status:'queued'}]]]));assert.throws(()=>D.mergeRestored(saved,current));
+});

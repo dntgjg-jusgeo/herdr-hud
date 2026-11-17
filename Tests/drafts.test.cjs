@@ -66,3 +66,11 @@ test('Markdown uses v4, round trips exact UTF8 and shares aggregate text budget'
  const large={kind:'markdown',name:'large.md',text:'x'.repeat(16384),bytes:16384};
  assert.throws(()=>D.restore({version:4,drafts:Array.from({length:65},(_,i)=>row({id:String(i),text:'',images:[large]}))}));
 });
+test('PDF references use v5 and reject changed metadata and malformed bounds',()=>{
+ const pdf={kind:'pdf',token:'01234567-89ab-cdef-0123-456789abcdef',name:'guide.pdf',bytes:100,pages:2};
+ const v={version:5,drafts:[row({images:[pdf]})]},restored=D.restore(v);
+ assert.equal(D.snapshot(restored).version,5);assert.deepEqual(D.snapshot(restored).drafts[0].images,[pdf]);
+ assert.throws(()=>D.restore({...v,version:4}));
+ for(const patch of [{pages:0},{pages:201},{bytes:10485761},{token:'../file'},{name:'../guide.pdf'}])assert.throws(()=>D.restore({version:5,drafts:[row({images:[{...pdf,...patch}]})]}));
+ assert.throws(()=>D.restore({version:5,drafts:[row({images:[pdf,{...pdf,pages:3}]})]}));
+});

@@ -512,3 +512,17 @@ Codex or managed OpenCode. A vision model is not needed for Markdown alone.
 Combined oversized prompts are refused without sending or truncating content.
 Markdown attachments survive restart and queued prompts in snapshot version 4;
 older builds refuse these snapshots rather than dropping files.
+
+### PDF attachments on macOS
+
+Drop a `.pdf`, copy it in Finder and press **Command-V**, or use **Attach files**.
+PDFs up to10MB/200pages share the three-file limit. Click the filename chip for
+a native full-document preview with scrolling and zoom; Command-W closes it.
+Unlock password-protected files before attaching. Private copies survive moving
+the original, draft recovery and queued prompts (snapshot version5).
+
+On Send, the agent receives the original local PDF reference and a bounded
+page-marked text excerpt. Large documents explicitly note omitted text; scans
+require the agent's PDF/image tools because no OCR is performed automatically.
+Attaching or previewing does not send anything to the agent. Local Claude, Codex
+and managed OpenCode are supported; PDF text alone needs no vision capability.
