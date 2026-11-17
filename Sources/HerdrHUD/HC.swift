@@ -15,6 +15,12 @@ final class HCClient {
     struct KeyPreview { let token: String; let text: String; let kind: String; let date: Date }
     var keyPreviews: [String: KeyPreview] = [:]
     var uncertainKeys: Set<String> = []
+    struct ModelPickerPreview { let token: String; let screen: String; let date: Date }
+    var modelPickerPreviews: [String:ModelPickerPreview] = [:]
+    var modelPickerHolds: [String:Date] = [:]
+    var modelPickerAwaiting: [String:Date] = [:]
+    var modelPickerUncertain: Set<String> = []
+    var modelPickerAllowsClaude = ModelPicker.allowsClaudeProcess
     init(binary: String, execute: @escaping (Invocation) throws -> String) {
         self.binary = binary; self.execute = execute
     }
@@ -121,6 +127,11 @@ final class HCClient {
             let liveIDs = rows.filter { $0["online"] as? Bool == true }.map { $0["id"] as! String }
             guard Set(liveIDs).count == liveIDs.count else { throw HUDError("hc returned duplicate terminal identities.") }
             bindings = Dictionary(uniqueKeysWithValues:rows.filter { $0["online"] as? Bool == true }.map { ($0["id"] as! String,$0) })
+            let valid = Set(liveIDs)
+            modelPickerPreviews = modelPickerPreviews.filter { valid.contains($0.key) }
+            modelPickerHolds = modelPickerHolds.filter { valid.contains($0.key) }
+            modelPickerAwaiting = modelPickerAwaiting.filter { valid.contains($0.key) }
+            modelPickerUncertain.formIntersection(valid)
             cache = Dictionary(grouping:rows,by: { $0["machine_id"] as! String })
             lastMachines = states
             return ["agents":rows,"machines":states,"discoveryError":""]
@@ -161,6 +172,7 @@ final class HCClient {
 
             }
         }
+        output["modelPicker"] = modelPickerState(id,row:row)
         return output
     }
     static func acceptsKeys(_ row: Row) -> Bool {
@@ -217,6 +229,7 @@ final class HCClient {
         // hc's atomic status condition only supports idle/working; done is displayed but
         // is deliberately read-only until the program reports idle.
         guard row["agent_status"] as? String == "idle" else { throw HUDError("This agent is busy or needs input. Answer native questions in Herdr.") }
+        try requireModelPickerClosed(id,row:row)
         guard attachments.count <= ImageAttachment.maximumCount, attachments.isEmpty || row["machine_id"] as? String == "local" else { throw HUDError("Image attachments require a local hc agent.") }
         var message = text
         do {
@@ -233,6 +246,7 @@ final class HCClient {
                 message += "\n\n[HUD attached images]\nInspect these local image files using your image viewing/read tool before answering. Each line is a JSON-quoted file path:\n" + paths.map { encode($0) }.joined(separator:"\n") + "\n[/HUD attached images]"
                 let current = try resolve(id)
                 guard current["agent_status"] as? String == "idle" else { throw HUDError("Agent is no longer idle.") }
+                try requireModelPickerClosed(id,row:current)
             }
             guard message.utf8.count <= 60000 else { throw HUDError("Prompt and image references exceed 60 KB.") }
             let result = try rpc([("terminal.send",["terminal":row["terminal_id"]!,"text":message,"if":"idle","force":false,"wait":false])],mutation:true)[0]

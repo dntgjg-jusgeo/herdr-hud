@@ -4,6 +4,7 @@ const post=data=>window.webkit?.messageHandlers?.hud ? window.webkit.messageHand
 if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event=>window.receive(event.data));
 let supportsHandoff=false,handoff=null,handoffSaving=false;
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
+let modelOpenIDs=new Set(),modelRequests=new Map(),modelUncertain=new Set(),modelAwaiting=new Set(),modelReadRequest='';
 let orcaSupported=false,orcaOpen=false,orcaStandalone=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
 let supportsPDF=false;
 let supportsWord=false;
@@ -36,6 +37,35 @@ $('orca-refresh').onclick=loadOrcaModels;
 $('orca-search').oninput=()=>renderOrcaPicker(true);
 $('orca-select').onchange=()=>{orcaChosen=$('orca-select').value;renderOrcaPicker();};
 $('orca-launch').onclick=()=>{if(!orcaApplies()||$('orca-launch').disabled)return;orcaBusy=true;orcaLaunchRequest=request('orcaLaunch',{model:orcaChosen});$('orca-status').textContent='Choose the project folder for this new OpenCode chat.';renderOrcaPicker();};
+function modelHeld(id){const picker=outputs.get(id)?.modelPicker;return modelAwaiting.has(id)||modelUncertain.has(id)||[...modelRequests.values()].some(x=>x.id===id)||!!(picker?.pending||picker?.uncertain||picker?.menu);}
+function renderModelPicker(){
+  const a=active(),picker=outputs.get(selected)?.modelPicker,visible=!!picker&&a?.online&&a.machine_id==='local'&&['claude','codex'].includes(a.agent),open=visible&&(modelOpenIDs.has(selected)||modelHeld(selected));
+  $('model-toggle').hidden=!visible;$('model-toggle').setAttribute('aria-expanded',String(open));$('model-panel').hidden=!open;
+  if(!visible)return;
+  const inFlight=modelAwaiting.has(selected)||[...modelRequests.values()].some(x=>x.id===selected);
+  const pending=inFlight||picker.pending,unsure=modelUncertain.has(selected)||picker.uncertain,menu=picker.menu;
+  $('model-heading').textContent=menu?.heading||'Session model';$('model-screen').textContent=menu?.text||'';
+  $('model-choices').replaceChildren(...(menu?.choices||[]).map(choice=>{const b=el('button',choice.label);b.type='button';b.disabled=!!pending||!!unsure||!menu.token;b.setAttribute('aria-pressed',String(!!choice.selected));b.title='Highlight '+choice.label;b.onclick=()=>modelAction('modelPickerKey',choice.key);return b;}));
+  $('model-status').textContent=unsure?'Check the session in Herdr before continuing.':pending?'Waiting for the session…':menu?(menu.applyKey==='s'?'Use selected applies to this session only.':'Choose a model using the controls below.'):picker.ready?'Ready to choose a model.':'Wait for an empty, ready session in Herdr.';
+  $('model-open').hidden=!!menu||!!unsure;$('model-open').disabled=!!pending||!picker.ready||sending||queueSaving;
+  for(const key of ['up','down','apply','cancel']){const button=$('model-'+key);button.hidden=!menu||!!unsure;button.disabled=!!pending||!menu?.token||(key==='apply'&&!['enter','s'].includes(menu?.applyKey));}
+  $('model-apply').textContent=menu?.applyKey==='enter'?'Continue':'Use selected';
+  $('model-reconcile').hidden=!unsure;$('model-reconcile').disabled=inFlight;
+}
+function modelAction(op,key){
+  const id=selected,picker=outputs.get(id)?.modelPicker;if(!picker||modelAwaiting.has(id)||[...modelRequests.values()].some(x=>x.id===id))return;
+  if(op==='openModelPicker'&&(!picker.ready||picker.menu||picker.pending||picker.uncertain||modelUncertain.has(id)||sending||queueSaving))return;
+  if(op==='modelPickerKey'&&(!key||!picker.menu?.token||picker.pending||picker.uncertain||modelUncertain.has(id)))return;
+  if(op==='reconcileModelPicker'&&!picker.uncertain&&!modelUncertain.has(id))return;
+  const extra={id};if(op==='modelPickerKey'){extra.key=key;extra.token=picker.menu.token;}
+  modelAwaiting.add(id);const requestID=request(op,extra);modelRequests.set(requestID,{id,op});renderHeader();
+}
+$('model-toggle').onclick=()=>{if(modelOpenIDs.has(selected)&&!modelHeld(selected))modelOpenIDs.delete(selected);else{modelOpenIDs.add(selected);const picker=outputs.get(selected)?.modelPicker;if(picker?.ready&&!picker.menu&&!modelHeld(selected))modelAction('openModelPicker');}renderModelPicker();};
+$('model-open').onclick=()=>modelAction('openModelPicker');
+for(const key of ['up','down'])$('model-'+key).onclick=()=>modelAction('modelPickerKey',key);
+$('model-apply').onclick=()=>modelAction('modelPickerKey',outputs.get(selected)?.modelPicker?.menu?.applyKey);
+$('model-cancel').onclick=()=>modelAction('modelPickerKey','esc');
+$('model-reconcile').onclick=()=>modelAction('reconcileModelPicker');
 function active(){const a=agents.find(a=>a.id===selected);if(a||!selected.startsWith('shepherdr:'))return a;const r=linked(selected);return r&&{id:r.view_id,online:true,agent_status:'readonly',agent:'shepherdr',workspace_label:r.space||r.title,machine_label:r.machine};}
 function statusLabel(a){return window.HUDUtilities?.status(a,completed.has(a?.id))||a?.agent_status||'Unknown';}
 function atBottom(){return window.HUDUtilities?.nearBottom($('output'))??true;}
@@ -77,7 +107,7 @@ function queueFor(id){return queues.get(id)||[];}
 function canQueue(a){return !!(supportsDrafts&&window.HUDFollowups&&a?.online&&['codex','claude','opencode'].includes(a.agent)&&['working','idle','done'].includes(a.agent_status));}
 function steerState(a){const s=nativeApprovalStates.get(a?.id);return a?.agent_status==='working'&&s?.canSteer&&!s.steerUncertain?s:null;}
 function renderHeader(){
-  renderOrcaPicker();renderHandoff();
+  renderOrcaPicker();renderModelPicker();renderHandoff();
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
   const model=sessionModel(a);$('title').title=model;if(model)$('identity').textContent+=' · '+model;
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
@@ -86,10 +116,10 @@ function renderHeader(){
   if(busy&&!since.has(a.id))since.set(a.id,Date.now());
   const steer=steerState(a),queueMode=canQueue(a)&&(!steer&&(busy||queueFor(selected).length>0||queueHolds.has(selected)));
   $('send').textContent=steer?'Send update ↗':queueMode?'Queue prompt +':'Send prompt ↗';
-  $('send').disabled=handoffSaving||!draftsLoaded||storageFailed||!a?.online||(!steer&&!queueMode&&(a.can_prompt===false||!['idle','done'].includes(state)))||sending||queueSaving||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
+  $('send').disabled=handoffSaving||!draftsLoaded||storageFailed||!a?.online||(!steer&&!queueMode&&(a.can_prompt===false||!['idle','done'].includes(state)))||sending||queueSaving||uncertain.has(selected)||modelHeld(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
   $('queue-instead').hidden=!steer||!canQueue(a);$('queue-instead').disabled=$('send').disabled;
-  $('prompt').disabled=handoffSaving||!a||!draftsLoaded;$('chat').disabled=a?.agent!=='codex';
-  $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?(steer?'Send an update to the active Codex task.':canQueue(a)?'Queue another prompt. It will send when this agent is ready.':'Agent is working. You can draft the next prompt here.'):a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
+  $('prompt').disabled=handoffSaving||!a||!draftsLoaded||modelHeld(selected);$('chat').disabled=a?.agent!=='codex';
+  $('send-status').textContent=modelHeld(selected)?'Model selection is active. Finish or reconcile it before sending.':sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?(steer?'Send an update to the active Codex task.':canQueue(a)?'Queue another prompt. It will send when this agent is ready.':'Agent is working. You can draft the next prompt here.'):a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
   $('reconcile').hidden=!uncertain.has(selected);
   renderQueue();renderNativeApprovals();renderTerminalControls();renderSuggestions();renderQuickPrompts();renderFileLinks();$('jump-latest').hidden=!queuedOutput.has(selected);$('draft-status').textContent=!supportsDrafts?'':!draftsLoaded?'Restoring saved drafts…':storageFailed?'Draft not saved — keep the HUD open.':'Draft recovery on';
   $('attach').hidden=!supportsAttachments;$('attach').disabled=!canAttach(a)||sending||queueSaving||uncertain.has(selected);renderAttachments();
@@ -353,7 +383,7 @@ for(const kind of ['dragover','drop'])document.addEventListener(kind,e=>{
   e.preventDefault();
   if(kind==='drop'){stageFiles(e.dataTransfer.files);}
 });
-function read(){if(!opened||reading||!active()?.online)return;reading=true;request('output',{id:selected});}
+function read(){if(!opened||reading||!active()?.online)return;reading=true;modelReadRequest=request('output',{id:selected});}
 function renderQueue(){
   const items=queueFor(selected),panel=$('prompt-queue');panel.hidden=!items.length;
   if(!items.length)return;
@@ -400,7 +430,7 @@ function observeQueueCycles(){
 function pumpQueue(){
   if(handoff||handoffSaving)return;
   if(!supportsDrafts||!draftsLoaded||storageFailed||queueSaving||sending)return;
-  const a=agents.find(a=>a.online&&a.agent_status==='idle'&&a.can_prompt!==false&&queueFor(a.id).length&&!queueHolds.has(a.id)&&!queuePaused.has(a.id)&&!uncertain.has(a.id)&&!terminalKeyUncertain.has(a.id));
+  const a=agents.find(a=>a.online&&a.agent_status==='idle'&&a.can_prompt!==false&&queueFor(a.id).length&&!queueHolds.has(a.id)&&!queuePaused.has(a.id)&&!uncertain.has(a.id)&&!terminalKeyUncertain.has(a.id)&&!modelHeld(a.id));
   if(!a)return;const item=window.HUDFollowups.head(queues,a.id);if(!item||item.status!=='queued')return;
   window.HUDFollowups.begin(queues,a.id,item.token);queueHolds.set(a.id,'await-working');
   sendPrompt(a.id,item.text,item.images,{queueToken:item.token});
@@ -449,9 +479,13 @@ window.receive=({type,data})=>{
   else if(type==='select'){select(data.id);}
   else if(type==='alertPreview'){if(!opened){const parsed=HUDModel.parse(data.text,data.provider),reply=parsed.blocks.filter(x=>x.kind==='reply').at(-1)?.text||'';post({op:'alert',id:data.id,title:data.title,preview:HUDModel.notificationPreview(reply)});}}
   else if(type==='output'){
-    reading=false;if(data.error){if(data.id===selected)notice(data.error);return;}
+    reading=false;const freshModelRead=data.requestID===modelReadRequest;if(freshModelRead&&!data.error&&![...modelRequests.values()].some(x=>x.id===data.id))modelAwaiting.delete(data.id);if(data.error){if(data.id===selected)notice(data.error);return;}
     outputs.set(data.id,data);if(data.id!==selected){read();return;}
-    const changed=lastOutput!==data.text;notice('');if(changed&&lastRendered&&opened&&!atBottom()&&!data.terminalControl){queuedOutput.add(selected);unread.add(selected);renderHeader();renderRoster();badge();return;}lastOutput=data.text;if(opened&&!previewMode){unread.delete(selected);queuedOutput.delete(selected);badge();}renderOutput();renderRoster();renderHeader();
+    const changed=lastOutput!==data.text;notice('');if(changed&&lastRendered&&opened&&!atBottom()&&!data.terminalControl){queuedOutput.add(selected);unread.add(selected);renderHeader();renderRoster();badge();return;}lastOutput=data.text;if(opened&&!previewMode){unread.delete(selected);queuedOutput.delete(selected);badge();}renderOutput();renderRoster();renderHeader();if(!freshModelRead&&modelAwaiting.has(selected))read();
+  }else if(['openModelPicker','modelPickerKey','reconcileModelPicker'].includes(type)){
+    const pending=modelRequests.get(data.requestID);if(!pending||pending.op!==type||data.id!==pending.id)return;modelRequests.delete(data.requestID);
+    if(data.uncertain||/uncertain/i.test(data.error||''))modelUncertain.add(pending.id);else if(type==='reconcileModelPicker'&&!data.error)modelUncertain.delete(pending.id);
+    if(data.error&&pending.id===selected)notice(data.error);request('refresh');if(reading)modelReadRequest='';if(pending.id===selected&&!reading)read();renderHeader();
   }else if(type==='terminalKey'||type==='approvalChoice'||type==='reconcileTerminalKeys'){
     const pending=terminalKeyRequests.get(data.requestID);if(!pending||pending.operation!==type)return;terminalKeyRequests.delete(data.requestID);
     if(data.error){notice(data.error);if(/uncertain/i.test(data.error))terminalKeyUncertain.add(pending.id);}

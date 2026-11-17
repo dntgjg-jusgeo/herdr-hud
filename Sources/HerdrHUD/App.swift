@@ -533,6 +533,36 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 }
             }
         case "alert": if !panelOpen && visible { showToast(data) }
+        case "openModelPicker", "modelPickerKey", "reconcileModelPicker":
+            let id = data["id"] as? String ?? ""
+            guard panelOpen, client.usesHC, !id.isEmpty, id == selected,
+                  defaults.string(forKey:"selectedAgent") == id, !requestID.isEmpty else {
+                emit(operation,["id":id,"requestID":requestID,"error":"Select the same local chat before using its model picker."])
+                return
+            }
+            guard promptIDs.insert(requestID).inserted else { return }
+            work.async {
+                let stillSelected = {
+                    DispatchQueue.main.sync {
+                        self.panelOpen && self.selected == id && self.defaults.string(forKey:"selectedAgent") == id
+                    }
+                }
+                var result: Row = ["id":id,"requestID":requestID]
+                do {
+                    if operation == "openModelPicker" { try self.client.hc.openModelPicker(id,stillSelected:stillSelected) }
+                    else if operation == "reconcileModelPicker" { try self.client.hc.reconcileModelPicker(id,stillSelected:stillSelected) }
+                    else {
+                        try self.client.hc.modelPickerKey(id,token:data["token"] as? String ?? "",
+                                                        key:data["key"] as? String ?? "",stillSelected:stillSelected)
+                    }
+                    result["ok"] = true
+                } catch {
+                    result["error"] = error.localizedDescription
+                    result["uncertain"] = self.client.hc.modelPickerUncertain.contains(id)
+                }
+                let reply = result
+                DispatchQueue.main.async { self.emit(operation,reply) }
+            }
         case "terminalKey", "approvalChoice", "reconcileTerminalKeys":
             guard panelOpen, self.client.usesHC, let id = data["id"] as? String, id == selected, !requestID.isEmpty else { return }
             guard !promptIDs.contains(requestID) else { return }; promptIDs.insert(requestID)

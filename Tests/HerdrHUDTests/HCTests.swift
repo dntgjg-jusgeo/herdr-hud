@@ -16,6 +16,7 @@ final class HCTests: XCTestCase {
         var snapshotCore: String?
         var afterRead: (() -> Void)?
         var afterPut: (() -> Void)?
+        var afterKeys: (([String]) -> Void)?
         var putResult: Row?
         lazy var client = HerdrClient(binary:"/fixture/hc",execute:run)
         func run(_ invocation: Invocation) throws -> String {
@@ -36,6 +37,7 @@ final class HCTests: XCTestCase {
                 case "terminal.read":result = ["text":screenText, "complete":screenComplete, "how":screenHow];afterRead?()
                 case "terminal.keys":
                     if sendError { throw HUDError("unknown outcome") }
+                    afterKeys?(params["keys"] as! [String])
                     result = sendResult
                 case "terminal.put":
                     let bytes=Data(base64Encoded:params["data"] as! String)!

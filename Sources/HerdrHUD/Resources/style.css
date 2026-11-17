@@ -31,3 +31,5 @@
 
 #chat-settings label{display:block;margin:12px 0} #chat-tools{font-size:17px;line-height:1}
 #quick-buttons[hidden]{display:none}
+
+#model-panel{padding:10px 16px;border-bottom:1px solid var(--line);background:#1b222a;flex-shrink:0}#model-screen{white-space:pre-wrap;overflow:auto;max-height:180px;font:11px/1.5 ui-monospace,SFMono-Regular,monospace;margin:6px 0}#model-status{font-size:11px;color:#e0c48c;margin:6px 0}

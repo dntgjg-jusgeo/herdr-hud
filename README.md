@@ -230,6 +230,24 @@ or more than 32 MiB of expanded content must be exported in a smaller form. Full
 No Word installation or document-conversion service is required. `.doc`, `.docm`
 and remote Word attachments are not supported.
 
+### Change the model in an existing chat
+
+On macOS, select a local Codex or Claude chat and click **Model**. The HUD
+opens that chat's native model picker when the terminal reports idle and its
+composer is empty. Click a listed model or use **Up** and **Down** to highlight
+it. In Codex, highlight **GPT-6.2-Astra**, click **Continue**, then choose an
+effort and click **Use selected**. In Claude, highlight an Anthropic model and
+click **Use selected**.
+The provider's session-only action applies the choice to the open chat.
+
+The HUD shows the current picker and checks the exact session and complete
+terminal screen before each key. Keep the Herdr terminal untouched while using
+these controls. Stock hc can delay a key while it waits for quiet and the screen
+can change during delivery. If the HUD cannot verify the picker, clear or close
+it in Herdr and click **I checked Herdr — continue**. The HUD holds prompts for that chat while
+the picker is active. The picker uses the model options the provider offers in
+the terminal, so model availability depends on the session and account.
+
 ### OrcaRouter models through OpenCode
 
 On macOS, **Orca models** appears inside a managed OrcaRouter OpenCode conversation and opens a searchable, collapsible model picker. It stays hidden for Claude, Codex and other OpenCode agents. Herdr’s OrcaRouter launcher can still open the picker to create the first chat. Select a
