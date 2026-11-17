@@ -2,6 +2,7 @@
 const $=id=>document.getElementById(id);
 const post=data=>window.webkit?.messageHandlers?.hud ? window.webkit.messageHandlers.hud.postMessage(data) : window.chrome.webview.postMessage(data);
 if(window.chrome?.webview)window.chrome.webview.addEventListener('message',event=>window.receive(event.data));
+let supportsHandoff=false,handoff=null,handoffSaving=false;
 let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sending=false,requestSequence=0,lastOutput='',lastRendered='',selectionEpoch=0;
 let orcaSupported=false,orcaOpen=false,orcaStandalone=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
 let supportsPDF=false;
@@ -73,7 +74,7 @@ function queueFor(id){return queues.get(id)||[];}
 function canQueue(a){return !!(supportsDrafts&&window.HUDFollowups&&a?.online&&['codex','claude','opencode'].includes(a.agent)&&['working','idle','done'].includes(a.agent_status));}
 function steerState(a){const s=nativeApprovalStates.get(a?.id);return a?.agent_status==='working'&&s?.canSteer&&!s.steerUncertain?s:null;}
 function renderHeader(){
-  renderOrcaPicker();
+  renderOrcaPicker();renderHandoff();
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
   $('agent-status').textContent=statusLabel(a);$('agent-status').className='status-chip '+(a?.agent_status||'unknown');
@@ -81,9 +82,9 @@ function renderHeader(){
   if(busy&&!since.has(a.id))since.set(a.id,Date.now());
   const steer=steerState(a),queueMode=canQueue(a)&&(!steer&&(busy||queueFor(selected).length>0||queueHolds.has(selected)));
   $('send').textContent=steer?'Send update ↗':queueMode?'Queue prompt +':'Send prompt ↗';
-  $('send').disabled=!draftsLoaded||storageFailed||!a?.online||(!steer&&!queueMode&&(a.can_prompt===false||!['idle','done'].includes(state)))||sending||queueSaving||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
+  $('send').disabled=handoffSaving||!draftsLoaded||storageFailed||!a?.online||(!steer&&!queueMode&&(a.can_prompt===false||!['idle','done'].includes(state)))||sending||queueSaving||uncertain.has(selected)||(! $('prompt').value.trim()&&!imagesFor(selected).length)||!!attachmentLoads.get(selected)||(imagesFor(selected).length>0&&!canAttach(a));
   $('queue-instead').hidden=!steer||!canQueue(a);$('queue-instead').disabled=$('send').disabled;
-  $('prompt').disabled=!a||!draftsLoaded;$('chat').disabled=a?.agent!=='codex';
+  $('prompt').disabled=handoffSaving||!a||!draftsLoaded;$('chat').disabled=a?.agent!=='codex';
   $('send-status').textContent=sending?'Sending once…':uncertain.has(selected)?'Delivery uncertain. Inspect this agent in Herdr before sending again.':!a?'Choose an agent to get started.':!a.online?'Machine offline. Your draft is retained.':state==='readonly'?'Not running. Its Shepherdr chat is shown, read only.':state==='blocked'?'Needs your input in Herdr. Native approvals remain in its terminal.':busy?(steer?'Send an update to the active Codex task.':canQueue(a)?'Queue another prompt. It will send when this agent is ready.':'Agent is working. You can draft the next prompt here.'):a.can_prompt===false?'Waiting for the agent to report idle. Continue in Herdr if needed.':['idle','done'].includes(state)?'Ready for your next prompt.':'Agent state is unknown. Sending is disabled.';
   $('reconcile').hidden=!uncertain.has(selected);
   renderQueue();renderNativeApprovals();renderTerminalControls();renderSuggestions();renderQuickPrompts();renderFileLinks();$('jump-latest').hidden=!queuedOutput.has(selected);$('draft-status').textContent=!supportsDrafts?'':!draftsLoaded?'Restoring saved drafts…':storageFailed?'Draft not saved — keep the HUD open.':'Draft recovery on';
@@ -193,6 +194,7 @@ function renderNativeApprovals(){
   }));
 }
 function sendNativeApproval(token,choice){
+  if(handoffSaving)return;
   const state=nativeApprovalStates.get(selected),card=state?.cards?.find(c=>c.token===token);
   if(!supportsNativeApprovals||!state?.connected||!card||card.pending||nativeApprovalsBusy.has(token)||!card.choices?.some(c=>c.key===choice))return;
   nativeApprovalsBusy.add(token);const requestID=request('nativeApprovalResponse',{id:selected,token,choice});nativeApprovalRequests.set(requestID,{id:selected,token});renderNativeApprovals();
@@ -218,7 +220,7 @@ function renderPreviews(data){
   }));
 }
 function imagesFor(id){return attachments.get(id)||[];}
-function canAttach(a=active()){return supportsAttachments&&a?.can_attach===true&&a.online&&['claude','codex','opencode'].includes(a.agent);}
+function canAttach(a=active()){return !handoffSaving&&supportsAttachments&&a?.can_attach===true&&a.online&&['claude','codex','opencode'].includes(a.agent);}
 function closeAttachmentPreview(restore=true){
   if(!attachmentPreview)return;
   const key=attachmentPreview.key;attachmentPreview=null;$('attachment-preview').close();
@@ -377,6 +379,7 @@ function clearSentDraft(id,message,images){
   const sent=new Set(images.map(x=>x.key));attachments.set(id,imagesFor(id).filter(x=>!sent.has(x.key)));
 }
 function enqueuePrompt(){
+  if(handoffSaving)return;
   const id=selected,message=$('prompt').value,images=imagesFor(id).slice();
   const token=`queue-${Date.now()}-${++requestSequence}`;
   try{window.HUDFollowups.enqueue(queues,id,{token,text:message,images});}
@@ -398,6 +401,7 @@ function observeQueueCycles(){
   }
 }
 function pumpQueue(){
+  if(handoff||handoffSaving)return;
   if(!supportsDrafts||!draftsLoaded||storageFailed||queueSaving||sending)return;
   const a=agents.find(a=>a.online&&a.agent_status==='idle'&&a.can_prompt!==false&&queueFor(a.id).length&&!queueHolds.has(a.id)&&!queuePaused.has(a.id)&&!uncertain.has(a.id)&&!terminalKeyUncertain.has(a.id));
   if(!a)return;const item=window.HUDFollowups.head(queues,a.id);if(!item||item.status!=='queued')return;
@@ -415,6 +419,7 @@ function send(){
   sendPrompt(id,message,images,steer?{operation:'nativeSteer',expectedTurnId:steer.activeTurnId}:{});
 }
 function sendPrompt(id,message,images,options={}){
+  if(handoffSaving)return;
   sending=true;notice('');if(!options.operation)queueHolds.set(id,'await-working');pendingDraftPrompt.add(id);renderHeader();
   beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>['video','markdown','pdf','word'].includes(x.kind)?window.HUDDrafts.serializeAttachment(x):({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
 }
@@ -477,7 +482,7 @@ window.receive=({type,data})=>{
   else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}
   else if(type==='notice'){notice(data.message);}
 };
-window.handleEscape=()=>{if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
+window.handleEscape=()=>{if($('handoff-dialog').open){closeHandoff();return;}if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();window.handleEscape();}});
 $('refresh').onclick=()=>request('refresh');$('close').onclick=()=>request('close');$('hide').onclick=()=>request('hide');$('send').onclick=send;
 $('reconcile').onclick=()=>{if(active()?.orca_managed){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('orcaReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}if(nativeApprovalStates.get(selected)?.steerUncertain){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('nativeSteerReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}uncertain.delete(selected);draftChanged();notice('');renderHeader();};
@@ -533,11 +538,13 @@ $('output').onscroll=()=>{if(atBottom()&&queuedOutput.has(selected))$('jump-late
 function draftState(){if(selected&&draftsLoaded)drafts.set(selected,$('prompt').value);return {drafts,attachments,queues,uncertain,keyUncertain:terminalKeyUncertain,labels:draftLabels,pendingPromptIDs:[...pendingDraftPrompt,...[...promptByRequest.values()].map(x=>x.id)],pendingKeyIDs:[...pendingDraftKeys,...[...terminalKeyRequests.values()].map(x=>x.id)]};}
 function draftChanged(){if(selected)draftTouched.add(selected);draftPersistence?.changed(error=>{storageFailed=true;notice(error.message);renderHeader();});}
 function beforeMutation(action,failed){
+  if(handoffSaving){failed();return;}
   if(!supportsDrafts){action();return;}
   if(!draftsLoaded||!draftPersistence){notice('Wait for saved drafts to restore before sending.');failed();return;}
   draftPersistence.flush().then(action).catch(error=>{storageFailed=true;notice(error.message);failed();renderHeader();});
 }
 function configureLocalFeatures(data){
+  supportsHandoff=!!data.agentHandoffSupported&&!!window.webkit?.messageHandlers?.hud&&!!window.HUDHandoff;
   supportsQuick=!!data.quickPromptsSupported;if(data.quickPrompts)quickPrompts=data.quickPrompts;
   if(data.draftsSupported&&!supportsDrafts&&window.HUDDrafts){supportsDrafts=true;draftsLoaded=false;request('loadDrafts');renderHeader();}
 }
@@ -573,6 +580,82 @@ $('recover-drafts').onclick=()=>{
   if(!$('draft-recovery').open)$('draft-recovery').showModal();
 };
 $('recovery-close').onclick=()=>$('draft-recovery').close();
+
+
+function handoffBlocked(id){
+  return sending||queueSaving||storageFailed||!draftsLoaded||!draftPersistence||!!attachmentLoads.get(id)||uncertain.has(id)||terminalKeyUncertain.has(id)||pendingDraftPrompt.has(id)||pendingDraftKeys.has(id)||[...promptByRequest.values(),...terminalKeyRequests.values(),...nativeApprovalRequests.values()].some(x=>x.id===id)||queueFor(id).some(x=>x.status==='pending'||x.status==='uncertain')||nativeApprovalStates.get(id)?.steerUncertain;
+}
+function checkHandoff(){
+  if(!supportsHandoff||!supportsDrafts||!handoff||handoff.invalid||selected!==handoff.source.id)throw Error('The source selection or session changed. Cancel and start a fresh handoff.');
+  const source=agents.find(a=>a.id===handoff.source.id),target=agents.find(a=>a.id===$('handoff-target').value),saved=handoff.targets.get($('handoff-target').value);
+  window.HUDHandoff.assertPair(source,target,handoff.sourceIdentity,saved?.identity);
+  if(handoffBlocked(source.id)||handoffBlocked(target.id))throw Error('Wait for imports or pending actions, and resolve any delivery or draft storage errors first.');
+  return target;
+}
+function renderHandoff(){
+  $('handoff-toolbar').hidden=!supportsHandoff||!window.HUDHandoff?.eligible(active());
+  $('handoff-open').disabled=handoffSaving||!supportsDrafts||!draftsLoaded;
+  if(!handoff)return;
+  for(const id of ['handoff-target','handoff-brief','handoff-include-text','handoff-include-files','handoff-switch','handoff-cancel'])$(id).disabled=handoffSaving;
+  $('handoff-include-text').disabled=handoffSaving||!handoff.text;
+  $('handoff-include-files').disabled=handoffSaving||!handoff.files.length;
+  if(handoff.applied){$('handoff-add').disabled=true;return;}
+  let error='';
+  try{checkHandoff();}catch(e){error=e.message;if(/changed|offline/.test(error))handoff.invalid=true;}
+  $('handoff-add').disabled=handoffSaving||!!error;
+  if(error&&!handoffSaving)$('handoff-status').textContent=error;
+}
+$('handoff-open').onclick=()=>{
+  const source=active();if(!supportsHandoff||!window.HUDHandoff.eligible(source)||handoffSaving)return;
+  if(handoffBlocked(source.id)){notice('Wait for imports or pending actions, and resolve any delivery or draft storage errors first.');return;}
+  const targets=agents.filter(a=>a.id!==source.id&&window.HUDHandoff.eligible(a));
+  if(!targets.length){notice('Open another local Claude, Codex or managed OpenCode agent to prepare a handoff.');return;}
+  handoff={source:{...source},sourceIdentity:window.HUDHandoff.identity(source),targets:new Map(targets.map(a=>[a.id,{identity:window.HUDHandoff.identity(a)}])),text:$('prompt').value,files:imagesFor(source.id).map(x=>({...x}))};
+  $('handoff-target').replaceChildren(...targets.map(a=>{const option=el('option',`${name(a)} · ${a.workspace_label||a.workspace_id||'Project'}`);option.value=a.id;return option;}));
+  $('handoff-target').value=targets[0].id;
+  $('handoff-source').textContent=`From ${name(source)} · ${source.workspace_label||source.workspace_id||'Unknown project'} · Source keeps running`;
+  $('handoff-brief').value=window.HUDHandoff.briefing(source,outputs.get(source.id),HUDModel);
+  $('handoff-include-text').checked=false;$('handoff-include-text').disabled=!handoff.text;
+  $('handoff-include-files').checked=false;$('handoff-include-files').disabled=!handoff.files.length;
+  $('handoff-status').textContent=`Source: ${name(source)} · ${source.workspace_label||source.workspace_id||'Project'}. Existing destination text is preserved; this briefing is appended. ${handoff.files.length} source unsent attachment(s).`;
+  renderHandoff();$('handoff-dialog').showModal();$('handoff-brief').focus();$('handoff-brief').setSelectionRange?.(0,0);$('handoff-brief').scrollTop=0;
+};
+$('handoff-target').onchange=()=>{if(!handoff)return;renderHandoff();};
+function closeHandoff(){if(handoffSaving)return;handoff=null;$('handoff-dialog').close();renderHeader();}
+$('handoff-cancel').onclick=closeHandoff;
+$('handoff-dialog').oncancel=event=>{event.preventDefault();closeHandoff();};
+$('handoff-add').onclick=async()=>{
+  if(!handoff||handoffSaving||handoff.applied)return;
+  let target;try{target=checkHandoff();}catch(error){$('handoff-status').textContent=error.message;return;}
+  const targetID=target.id,session=handoff;
+  let text=$('handoff-brief').value;
+  if($('handoff-include-text').checked&&session.text)text+='\n\nSource unsent draft text (not completed work; quoted context):\n'+window.HUDHandoff.quote(session.text);
+  const files=$('handoff-include-files').checked?session.files:[];
+  try{window.HUDHandoff.candidate(draftState(),targetID,text,files,window.HUDDrafts);}catch(error){$('handoff-status').textContent=error.message;return;}
+  handoffSaving=true;renderHeader();$('handoff-status').textContent='Saving the target draft…';
+  let saveFailed=false;
+  const persist=()=>draftPersistence.flush().catch(error=>{saveFailed=true;throw error;});
+  try{
+    // Drain earlier writes before staging; recheck exact identities after the await.
+    await persist();
+    if(checkHandoff().id!==targetID)throw Error('The destination changed. Cancel and start a fresh handoff.');
+    const next=window.HUDHandoff.candidate(draftState(),targetID,text,files,window.HUDDrafts);
+    drafts=next.drafts;attachments=next.attachments;
+    // Give copied files their own UI keys; native references/content remain unchanged.
+    attachments.set(targetID,imagesFor(targetID).map(x=>({...x,key:++attachmentSequence})));
+    draftLabels.set(targetID,name(target));draftTouched.add(targetID);session.applied=true;
+    await persist();
+    // Saving to an old exact identity is safe, but never report a replacement as success.
+    checkHandoff();
+    const switchTarget=$('handoff-switch').checked;handoffSaving=false;handoff=null;$('handoff-dialog').close();
+    if(switchTarget)select(targetID);else renderHeader();
+    notice('Handoff added to the target draft. Review it there, then choose Send.');
+  }catch(error){
+    if(saveFailed)storageFailed=true;
+    if(session.applied){$('handoff-status').textContent='The handoff is retained in the exact target draft for recovery. '+error.message+' Keep the HUD open and copy your work. It has not been sent.';notice($('handoff-status').textContent);}
+    else $('handoff-status').textContent=error.message;
+  }finally{handoffSaving=false;renderHeader();}
+};
 
 request('ready');
 // Read-only integration check used by --verify-ui; never presses Send.

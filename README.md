@@ -106,6 +106,23 @@ run the packaged app. Xcode command-line tools are needed to build from source.
   keybindings determine the effect. These are not semantic approval API buttons.
   Stock hc and existing holders retain manual arrow/Enter/Escape controls.
 
+### Agent handoff on macOS
+
+Click **Handoff…** above the composer to prepare a briefing for another local
+Claude, Codex or managed OpenCode session. Choose the destination, edit the brief,
+and use **Add to target draft**. The HUD packages a bounded snapshot of recent
+output, source project details and available file references; it does not claim
+to transfer the full conversation history. You can opt in to including the
+source's unsent draft and copying its staged attachments.
+
+The handoff appends to the destination's existing draft and preserves the source.
+Review the destination draft and choose Send when ready. Creating a handoff does
+not send, queue, approve anything, stop either agent or change its project folder.
+Existing queues stay separate; queued delivery pauses while the review is open. Changed sessions, unavailable destinations,
+uncertain delivery and storage/capacity errors block staging instead of replacing
+work. Both sessions must be local; file references are not uploaded to a remote
+machine. Windows does not yet advertise handoff support.
+
 ### Multiple prompts while an agent works
 
 On macOS, **Queue prompt** saves follow-ups for Claude Code and existing Codex

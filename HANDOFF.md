@@ -640,3 +640,14 @@ Word text-only preparation yields no images. Existing OpenCode image capability
 checks reject documents with an image overview on text-only models. Windows does
 not advertise Word support. Synthetic fixtures and isolated agent verification
 remain outside the repo; never use existing user chats for send tests.
+
+## Agent handoff — November 16, 2026
+
+The macOS hc host advertises agentHandoffSupported. Shared handoff UI prepares a
+reviewable draft for an exact other local Claude/Codex/managed OpenCode session.
+It freezes bounded recent output and file references as context, supports optional
+unsent text/attachment copying, and appends to existing target drafts. It does not
+send or copy queues/approvals. Draft persistence and aggregate attachment limits
+remain authoritative. Session/online/readiness-for-staging checks run again before
+mutation, with pending/uncertain operations blocked. No live agent prompt is
+required for verification; stage a synthetic draft and remove only that test draft.
