@@ -32,4 +32,11 @@
 #chat-settings label{display:block;margin:12px 0} #chat-tools{font-size:17px;line-height:1}
 #quick-buttons[hidden]{display:none}
 
-#model-panel{padding:10px 16px;border-bottom:1px solid var(--line);background:#1b222a;flex-shrink:0}#model-screen{white-space:pre-wrap;overflow:auto;max-height:180px;font:11px/1.5 ui-monospace,SFMono-Regular,monospace;margin:6px 0}#model-status{font-size:11px;color:#e0c48c;margin:6px 0}
+#model-panel{padding:10px 16px;border-bottom:1px solid var(--line);background:#1b222a;flex-shrink:0;max-height:45%;overflow:auto}
+#model-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(195px,100%),1fr));gap:6px}
+#model-choices:not(:empty){margin-top:8px}
+#model-choices button{text-align:left;align-self:stretch;line-height:1.35}
+.model-label,.model-detail{display:block;overflow-wrap:anywhere}
+.model-label{font-weight:600}
+.model-detail{margin-top:3px;color:#b8bfca;font-size:11px}
+#model-status{font-size:11px;color:#e0c48c;margin:6px 0}

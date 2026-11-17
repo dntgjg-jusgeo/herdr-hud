@@ -7,11 +7,18 @@ struct ModelPicker {
     struct Choice {
         let key: String
         let label: String
-        let detail: String
+        var detail: String
         let selected: Bool
 
         var focusKey: String { "focus:"+key }
-        var row: Row { ["key":focusKey, "label":label, "selected":selected] }
+        var row: Row { ["key":focusKey, "label":label, "detail":detail, "selected":selected] }
+        var effort: String { label.components(separatedBy:" (")[0] }
+        var opensMoreReasoning: Bool { ["More reasoning…","More reasoning..."].contains(label) }
+        var opensAllModels: Bool { ["All models","All models (current)"].contains(label) }
+
+        func matches(_ other: Choice) -> Bool {
+            key == other.key && label == other.label && detail == other.detail
+        }
     }
 
     let heading: String
@@ -19,6 +26,10 @@ struct ModelPicker {
     let applyKey: String?
     let selectedChoice: Choice
     let choices: [Choice]
+    let note: String?
+    let entries: [Choice]
+    let canRevealPrevious: Bool
+    let canRevealNext: Bool
 
     private static let codexHeadings = ["Select Model and Effort", "Select Model"]
     private static let codexReasoning = "Select Reasoning Level for "
@@ -26,6 +37,8 @@ struct ModelPicker {
     private static let advancedReasoning = "Advanced Reasoning"
     private static let codexContinue = "enter select · esc back"
     private static let codexSessionFooters = ["enter default · s session · esc back", "enter apply · s session · esc back"]
+    private static let standardEfforts = ["None","Minimal","Low","Medium","High","Extra high"]
+    private static let advancedEfforts = ["Max","Ultra"]
     private static let numbered = try! NSRegularExpression(pattern:#"^([›❯>])?\s*([1-9][0-9]*)\.\s+(.+)$"#)
 
     static func lines(_ screen: String) -> [String] {
@@ -35,52 +48,92 @@ struct ModelPicker {
     }
 
     static func menu(_ screen: String, provider: String) -> Self? {
-        let lines = lines(screen)
+        guard provider == "codex" || provider == "claude" else { return nil }
+        let rawLines = screen.components(separatedBy:.newlines).filter {
+            !$0.trimmingCharacters(in:.whitespaces).isEmpty
+        }
+        let lines = rawLines.map { $0.trimmingCharacters(in:.whitespaces) }
         guard let footer = lines.last else { return nil }
         let isHeading: (String) -> Bool = provider == "codex"
             ? { codexHeadings.contains($0) || $0.hasPrefix(codexReasoning) || $0 == advancedReasoning }
             : { $0 == claudeHeading }
         guard let start = lines.lastIndex(where:isHeading), start < lines.count-1 else { return nil }
         let heading = lines[start]
-        let entries = lines[(start+1)..<(lines.count-1)].compactMap { line -> Choice? in
-            guard let match = numbered.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)),
-                  let number = Range(match.range(at:2),in:line), let content = Range(match.range(at:3),in:line) else { return nil }
-            let body = String(line[content])
-            let gap = body.range(of:#"\s{2,}"#,options:.regularExpression)
-            return Choice(key:String(line[number]), label:gap.map { String(body[..<$0.lowerBound]) } ?? body,
-                          detail:gap.map { String(body[$0.upperBound...]) } ?? "", selected:match.range(at:1).location != NSNotFound)
-        }
+        let body = (start+1)..<(lines.count-1)
+        let (entries, notes) = parseEntries(rawLines[body])
         let selected = entries.filter(\.selected)
         guard !entries.isEmpty, Set(entries.map(\.key)).count == entries.count, selected.count == 1 else { return nil }
 
         let applyKey: String?
-        var choices: [Choice] = []
+        let choices: [Choice]
+        var note: String?
         let selection = selected[0]
         if provider == "codex", codexHeadings.contains(heading),
            footer == codexContinue || codexSessionFooters.contains(footer) {
-            choices = entries.filter { isCodexModel($0.label) || $0.label == "All models (current)" || $0.label == "All models" }
+            choices = entries.filter { isCodexModel($0.label) || $0.opensAllModels }
             if choices.contains(where:{ $0.key == selection.key }) {
-                applyKey = footer == codexContinue ? "enter" : "s"
+                applyKey = footer == codexContinue ? "enter" : selection.opensAllModels ? nil : "s"
             } else { applyKey = nil }
         } else if provider == "codex", heading.hasPrefix(codexReasoning),
                   isCodexModel(String(heading.dropFirst(codexReasoning.count))) {
-            if selection.label.hasPrefix("More reasoning"), footer == codexContinue { applyKey = "enter" }
-            else {
-                let effort = selection.label.components(separatedBy:" (").first ?? ""
-                guard codexSessionFooters.contains(footer) else { return nil }
-                applyKey = ["None","Minimal","Low","Medium","High","Extra high"].contains(effort) ? "s" : nil
-            }
+            choices = entries.filter { standardEfforts.contains($0.effort) || $0.opensMoreReasoning }
+            if selection.opensMoreReasoning, footer == codexContinue { applyKey = "enter" }
+            else if codexSessionFooters.contains(footer) {
+                applyKey = standardEfforts.contains(selection.effort) ? "s" : nil
+            } else { return nil }
         } else if provider == "codex", heading == advancedReasoning, codexSessionFooters.contains(footer),
-                  lines[(start+1)..<(lines.count-1)].contains("⚠ Consumes usage limits faster") {
-            let effort = selection.label.components(separatedBy:" (").first ?? ""
-            applyKey = ["Max","Ultra"].contains(effort) ? "s" : nil
+                  notes.contains("⚠ Consumes usage limits faster") {
+            choices = entries.filter { advancedEfforts.contains($0.effort) }
+            applyKey = advancedEfforts.contains(selection.effort) ? "s" : nil
+            note = notes.first(where:{ $0.hasPrefix("⚠ ") })
         } else if provider == "claude", heading == claudeHeading,
                   footer == "Enter to set as default · s to use this session only · Esc to cancel",
-                  lines[(start+1)..<(lines.count-1)].contains(where:{ $0.hasPrefix("Switch between Claude models.") }) {
+                  notes.contains(where:{ $0.hasPrefix("Switch between Claude models.") }) {
             choices = entries.filter(isClaudeModel)
             applyKey = choices.contains(where:{ $0.key == selection.key }) ? "s" : nil
+            note = notes.first(where:{ $0.contains(" effort") && $0.contains("←/→") })
         } else { return nil }
-        return Self(heading:heading, text:lines[start...].joined(separator:"\n"), applyKey:applyKey, selectedChoice:selection, choices:choices)
+        return Self(heading:heading, text:lines[start...].joined(separator:"\n"), applyKey:applyKey,
+                    selectedChoice:selection, choices:choices, note:note, entries:entries,
+                    canRevealPrevious:notes.contains("↑") || notes.contains("↕"),
+                    canRevealNext:notes.contains("↓") || notes.contains("↕"))
+    }
+
+    private static func parseEntries(_ rawLines: ArraySlice<String>) -> ([Choice], [String]) {
+        var entries: [Choice] = []
+        var notes: [String] = []
+        var detailColumn: Int?
+        for raw in rawLines {
+            let line = raw.trimmingCharacters(in:.whitespaces)
+            let indentation = raw.prefix(while: \.isWhitespace).count
+            if let match = numbered.firstMatch(in:line,range:NSRange(line.startIndex...,in:line)),
+               let number = Range(match.range(at:2),in:line), let content = Range(match.range(at:3),in:line) {
+                let body = line[content]
+                let gap = body.range(of:#"\s{2,}"#,options:.regularExpression)
+                let label = gap.map { String(body[..<$0.lowerBound]) } ?? String(body)
+                let detail = gap.map { String(body[$0.upperBound...]) } ?? ""
+                detailColumn = gap.map { indentation + line.distance(from:line.startIndex,to:$0.upperBound) }
+                entries.append(Choice(key:String(line[number]),label:label,detail:detail,
+                                      selected:match.range(at:1).location != NSNotFound))
+            } else if let column = detailColumn, indentation >= column, !["↑","↓","↕"].contains(line),
+                      !line.hasPrefix("⚠ "), !line.contains("←/→") {
+                entries[entries.count-1].detail += " " + line
+            } else {
+                detailColumn = nil
+                notes.append(line)
+            }
+        }
+        return (entries,notes)
+    }
+
+    func confirmsAction(_ key: String, on screen: String, provider: String) -> Bool {
+        if key == "s" { return Self.blankComposer(screen,provider:provider) }
+        guard key == "enter", let menu = Self.menu(screen,provider:provider) else { return false }
+        if selectedChoice.opensAllModels { return Self.codexHeadings.contains(menu.heading) }
+        if selectedChoice.opensMoreReasoning { return menu.heading == Self.advancedReasoning }
+        let model = selectedChoice.label
+        let name = model.hasSuffix(" (current)") ? String(model.dropLast(" (current)".count)) : model
+        return menu.heading == Self.codexReasoning + name
     }
 
     private static let claudeFamilies = ["Opus","Sonnet","Haiku","Fable"]

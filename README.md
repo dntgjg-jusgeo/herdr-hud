@@ -234,10 +234,9 @@ and remote Word attachments are not supported.
 
 On macOS, select a local Codex or Claude chat and click **Model**. The HUD
 opens that chat's native model picker when the terminal reports idle and its
-composer is empty. Click a listed model or use **Up** and **Down** to highlight
-it. In Codex, highlight **GPT-6.2-Astra**, click **Continue**, then choose an
-effort and click **Use selected**. In Claude, highlight an Anthropic model and
-click **Use selected**.
+composer is empty. Click a model to select it. When Codex offers reasoning levels, click the
+effort you want. In Claude, click the Anthropic model to apply it directly.
+Click **Model** again to go back one step in the native picker.
 The provider's session-only action applies the choice to the open chat.
 
 The HUD shows the current picker and checks the exact session and complete

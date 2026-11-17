@@ -57,6 +57,9 @@ extension HCClient {
         modelPickerPreviews[id] = preview
         var visible: Row = ["token":preview.token,"heading":menu.heading,"text":menu.text,"choices":menu.choices.map(\.row)]
         visible["applyKey"] = menu.applyKey
+        visible["note"] = menu.note
+        if menu.canRevealPrevious { visible["previousKey"] = "reveal:up" }
+        if menu.canRevealNext { visible["nextKey"] = "reveal:down" }
         output["menu"] = visible
         output["pending"] = false
         return output
@@ -106,58 +109,104 @@ extension HCClient {
             throw HUDError("Model picker changed or expired. Review its current screen again.")
         }
         modelPickerPreviews.removeValue(forKey:id)
+        guard let provider = Self.modelPickerProvider(try resolve(id)),
+              let menu = ModelPicker.menu(preview.screen,provider:provider) else {
+            throw HUDError("Model picker changed. Review its current screen again.")
+        }
+        if let target = menu.choices.first(where:{ $0.focusKey == key }) {
+            let (focused,screen) = try highlightModelChoice(id,screen:preview.screen,menu:menu,target:target,
+                                                           provider:provider,stillSelected:stillSelected)
+            guard let action = focused.applyKey else {
+                throw HUDError("The selected row has no verified session action.")
+            }
+            try applyModelChoice(id,screen:screen,menu:focused,key:action,provider:provider,stillSelected:stillSelected)
+        } else if let edge = revealEdge(key,menu:menu) {
+            let (focused,screen) = try highlightModelChoice(id,screen:preview.screen,menu:menu,target:edge,
+                                                           provider:provider,stillSelected:stillSelected)
+            let up = key == "reveal:up"
+            guard up ? focused.canRevealPrevious : focused.canRevealNext else { return }
+            let row = try checkedModelPickerRow(id,screen:screen,provider:provider,stillSelected:stillSelected)
+            try sendModelNavigationKey(id,row:row,key:up ? "up" : "down")
+        } else if key == menu.applyKey {
+            try applyModelChoice(id,screen:preview.screen,menu:menu,key:key,provider:provider,stillSelected:stillSelected)
+        } else if ["up","down","esc"].contains(key) {
+            let row = try checkedModelPickerRow(id,screen:preview.screen,provider:provider,stillSelected:stillSelected)
+            try sendModelNavigationKey(id,row:row,key:key)
+        } else {
+            throw HUDError("This key is unavailable for the current model selection.")
+        }
+    }
+
+    private func revealEdge(_ key: String, menu: ModelPicker) -> ModelPicker.Choice? {
+        if key == "reveal:up", menu.canRevealPrevious { return menu.entries.first }
+        if key == "reveal:down", menu.canRevealNext { return menu.entries.last }
+        return nil
+    }
+
+    private func highlightModelChoice(_ id: String, screen: String, menu: ModelPicker, target: ModelPicker.Choice,
+                                      provider: String, stillSelected: () -> Bool) throws -> (ModelPicker,String) {
+        guard let start = menu.entries.firstIndex(where:{ $0.selected }),
+              let end = menu.entries.firstIndex(where:{ $0.key == target.key }) else {
+            throw HUDError("The requested row is unavailable.")
+        }
+        if start == end { return (menu,screen) }
+        let step = end > start ? 1 : -1
+        let arrow = step == 1 ? "down" : "up"
+        var focused = menu
+        var checkedScreen = screen
+        for index in stride(from:start+step,through:end,by:step) {
+            let expected = menu.entries[index]
+            let row = try checkedModelPickerRow(id,screen:checkedScreen,provider:provider,stillSelected:stillSelected)
+            try sendModelNavigationKey(id,row:row,key:arrow)
+            checkedScreen = try readUpdatedModelScreen(id,provider:provider,from:checkedScreen)
+            guard let updated = ModelPicker.menu(checkedScreen,provider:provider), updated.heading == menu.heading,
+                  updated.selectedChoice.matches(expected),
+                  updated.entries.contains(where:{ $0.matches(target) }) else {
+                throw HUDError("The model list changed while moving its selection. Review the current model list.")
+            }
+            focused = updated
+        }
+        return (focused,checkedScreen)
+    }
+
+    private func checkedModelPickerRow(_ id: String, screen: String, provider: String, stillSelected: () -> Bool) throws -> Row {
         let row = try resolve(id)
-        guard let provider = Self.modelPickerProvider(row), Self.modelPickerIdle(row), modelPickerAllowed(row,provider:provider),
-              let menu = ModelPicker.menu(preview.screen,provider:provider),
-              try liveScreen(row) == preview.screen else { throw HUDError("Model picker changed. Review its current screen again.") }
+        guard Self.modelPickerIdle(row), modelPickerAllowed(row,provider:provider),
+              try liveScreen(row) == screen else {
+            throw HUDError("Model picker changed. Review its current screen again.")
+        }
         let current = try resolve(id)
         guard Self.modelPickerIdle(current), modelPickerAllowed(current,provider:provider), stillSelected() else {
             throw HUDError("The selected chat changed before model picker input.")
         }
-        if let target = menu.choices.first(where:{ $0.focusKey == key }) {
-            try highlightModelChoice(id,row:current,screen:preview.screen,menu:menu,target:target,
-                                     provider:provider,stillSelected:stillSelected)
-        } else {
-            guard ["up","down","esc"].contains(key) || menu.applyKey == key else {
-                throw HUDError("This key is unavailable for the current model selection.")
+        return current
+    }
+
+    private func applyModelChoice(_ id: String, screen: String, menu: ModelPicker, key: String,
+                                  provider: String, stillSelected: () -> Bool) throws {
+        let row = try checkedModelPickerRow(id,screen:screen,provider:provider,stillSelected:stillSelected)
+        try sendModelNavigationKey(id,row:row,key:key)
+        do {
+            _ = try readUpdatedModelScreen(id,provider:provider,from:screen) {
+                menu.confirmsAction(key,on:$0,provider:provider)
             }
-            try sendModelNavigationKey(id,row:current,key:key)
+        } catch {
+            modelPickerUncertain.insert(id)
+            modelPickerHolds[id] = Date()
+            throw HUDError("The model picker outcome is uncertain. Check the terminal in Herdr before trying again.")
         }
     }
 
-    private func highlightModelChoice(_ id: String, row: Row, screen: String, menu: ModelPicker, target: ModelPicker.Choice,
-                                      provider: String, stillSelected: () -> Bool) throws {
-        guard let selectedNumber = Int(menu.selectedChoice.key), let targetNumber = Int(target.key),
-              abs(targetNumber-selectedNumber) <= 9 else { throw HUDError("The requested row is out of range.") }
-        let step = targetNumber > selectedNumber ? 1 : -1
-        let arrow = step > 0 ? "down" : "up"
-        var currentNumber = selectedNumber
-        var current = row
-        var checkedScreen = screen
-        // A numbered Codex shortcut can apply a default immediately for a model
-        // with one effort. Clicking a row moves focus and never submits it.
-        while currentNumber != targetNumber {
-            guard stillSelected() else { throw HUDError("The selected chat changed during model navigation.") }
-            try sendModelNavigationKey(id,row:current,key:arrow)
-            currentNumber += step
-            current = try resolve(id)
-            guard Self.modelPickerIdle(current), modelPickerAllowed(current,provider:provider) else {
+    private func readUpdatedModelScreen(_ id: String, provider: String, from previous: String,
+                                        accepting: (String) -> Bool = { _ in true }) throws -> String {
+        for attempt in 0..<4 {
+            let row = try resolve(id)
+            guard Self.modelPickerIdle(row), modelPickerAllowed(row,provider:provider) else {
                 throw HUDError("The selected chat changed during model navigation.")
             }
-            checkedScreen = try readUpdatedModelScreen(current,from:checkedScreen)
-            guard let updated = ModelPicker.menu(checkedScreen,provider:provider), updated.heading == menu.heading,
-                  Int(updated.selectedChoice.key) == currentNumber,
-                  updated.choices.contains(where:{ $0.key == target.key && $0.label == target.label }) else {
-                throw HUDError("The model list changed while moving its selection. Review the current model list.")
-            }
-        }
-    }
-
-    private func readUpdatedModelScreen(_ row: Row, from previous: String) throws -> String {
-        for attempt in 0..<4 {
             let current = try liveScreen(row)
-            if current != previous { return current }
-            if attempt < 3 { Thread.sleep(forTimeInterval:0.04) }
+            if current != previous && accepting(current) { return current }
+            if attempt < 3 { Thread.sleep(forTimeInterval:0.1) }
         }
         throw HUDError("The picker did not show the requested selection. Review its current screen.")
     }
@@ -204,7 +253,7 @@ extension HCClient {
 
     private func writeModelPickerKeys(_ row: Row, keys: [String]) throws {
         // The stock hc endpoint waits for quiet and has no atomic screen guard.
-        // Send one reviewed key per navigation click and never retry a write.
+        // Review the screen before each write and never retry a write.
         let reply = try rpc([("terminal.keys",["terminal":row["terminal_id"]!,"keys":keys])],mutation:true)[0]
         guard let turn = reply["turn"] as? NSNumber, CFGetTypeID(turn) != CFBooleanGetTypeID(),
               turn.doubleValue >= 0, turn.doubleValue.rounded(.down) == turn.doubleValue else {

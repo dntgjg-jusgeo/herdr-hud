@@ -29,6 +29,13 @@ final class ModelPickerTests: XCTestCase {
       5. More reasoning…  Max and Ultra consume usage limits faster
       enter default · s session · esc back
     """
+    let codexAdvanced = """
+      Advanced Reasoning
+      ⚠ Consumes usage limits faster
+    › 1. Max    Deeper reasoning for the most difficult tasks
+      2. Ultra  Most intensive reasoning
+      enter default · s session · esc back
+    """
     let claudeBlank = """
     ─────────────────────────────────────────────
     ❯\u{a0}
@@ -71,6 +78,11 @@ final class ModelPickerTests: XCTestCase {
         try XCTUnwrap((state(fixture,id:id)["menu"] as? Row)?["token"] as? String)
     }
 
+    func focus(_ screen: String, from current: Int, to target: Int) -> String {
+        screen.replacingOccurrences(of:"› \(current).",with:"  \(current).")
+            .replacingOccurrences(of:"  \(target).",with:"› \(target).")
+    }
+
     func keys(_ fixture: HCTests.Fixture) throws -> [[String]] {
         try fixture.mutations.map { invocation in
             let request = try XCTUnwrap(JSONSerialization.jsonObject(with:XCTUnwrap(invocation.input)) as? Row)
@@ -83,13 +95,18 @@ final class ModelPickerTests: XCTestCase {
         let models = try XCTUnwrap(ModelPicker.menu(codexModels,provider:"codex"))
         XCTAssertEqual(models.choices.map(\.key),["1","2","3"])
         XCTAssertEqual(models.choices[1].label,"GPT-6.2-Astra")
+        XCTAssertEqual(models.choices[1].row["detail"] as? String,"Our most capable model for complex coding and professional work.")
         XCTAssertEqual(models.applyKey,"enter")
         let effort = try XCTUnwrap(ModelPicker.menu(codexReasoning,provider:"codex"))
         XCTAssertEqual(effort.applyKey,"s")
-        XCTAssertTrue(effort.choices.isEmpty)
+        XCTAssertEqual(effort.choices.map(\.label),["Low (default)","Medium","High","Extra high","More reasoning…"])
+        let advanced = try XCTUnwrap(ModelPicker.menu(codexAdvanced,provider:"codex"))
+        XCTAssertEqual(advanced.choices.map(\.label),["Max","Ultra"])
+        XCTAssertEqual(advanced.note,"⚠ Consumes usage limits faster")
         let claude = try XCTUnwrap(ModelPicker.menu(claudeModels,provider:"claude"))
         XCTAssertEqual(claude.applyKey,"s")
         XCTAssertEqual(claude.choices.map(\.label),["Default (recommended) ✔","Opus","Fable","Sonnet","Haiku"])
+        XCTAssertEqual(claude.note,"◐ Medium effort (default) ←/→ to adjust")
         XCTAssertNil(ModelPicker.menu(claudeModels,provider:"codex"))
         XCTAssertNil(ModelPicker.menu(codexModels,provider:"claude"))
         XCTAssertNil(ModelPicker.menu(codexModels+"\nUnexpected dialog",provider:"codex"))
@@ -98,16 +115,25 @@ final class ModelPickerTests: XCTestCase {
         XCTAssertNil(ModelPicker.menu(custom,provider:"claude")?.applyKey)
     }
 
-    func testStagedOpenModelHighlightReasoningAndCloseKeepPromptSeparate() throws {
+    func testMenuRejoinsTerminalWrappedDescriptions() throws {
+        let wrapped = codexModels.replacingOccurrences(of:"complex coding and professional work.",
+                                                        with:"complex coding\n" + String(repeating:" ",count:29) + "and professional work.")
+        let menu = try XCTUnwrap(ModelPicker.menu(wrapped,provider:"codex"))
+        XCTAssertEqual(menu.choices[1].detail,"Our most capable model for complex coding and professional work.")
+        XCTAssertTrue(menu.canRevealNext)
+        XCTAssertFalse(menu.canRevealPrevious)
+        XCTAssertFalse(menu.choices.last?.detail.contains("↓") ?? true)
+    }
+
+    func testStagedOpenClickModelAndEffortKeepPromptSeparate() throws {
         let f = fixture(), id = f.id(), hc = f.client.hc
         XCTAssertEqual(try state(f,id:id)["ready"] as? Bool,true)
-        let highlighted = codexModels.replacingOccurrences(of:"› 1.",with:"  1.")
-            .replacingOccurrences(of:"  2.",with:"› 2.")
+        let highlighted = focus(codexModels,from:1,to:2)
         f.afterKeys = { keys in
             switch keys {
             case ["/","m","o","d","e","l"]: f.screenText = self.codexStaged
             case ["enter"]: f.screenText = f.screenText == self.codexStaged ? self.codexModels : self.codexReasoning
-            case ["down"]: f.screenText = highlighted
+            case ["down"]: f.screenText = f.screenText == self.codexModels ? highlighted : self.focus(self.codexReasoning,from:2,to:3)
             case ["s"]: f.screenText = self.codexBlank
             default: XCTFail("Unexpected key")
             }
@@ -119,13 +145,12 @@ final class ModelPickerTests: XCTestCase {
         XCTAssertThrowsError(try hc.modelPickerKey(id,token:model,key:"2",stillSelected:{true}))
         try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:2",stillSelected:{true})
         XCTAssertThrowsError(try hc.modelPickerKey(id,token:model,key:"focus:2",stillSelected:{true}))
-        XCTAssertEqual(f.screenText,highlighted)
-        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"enter",stillSelected:{true})
+        XCTAssertEqual(f.screenText,codexReasoning)
         let reasoning = try menuToken(f,id:id)
         XCTAssertThrowsError(try hc.modelPickerKey(id,token:reasoning,key:"enter",stillSelected:{true}))
-        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"s",stillSelected:{true})
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:3",stillSelected:{true})
         XCTAssertEqual(try state(f,id:id)["ready"] as? Bool,true)
-        XCTAssertEqual(try keys(f),[["/","m","o","d","e","l"],["enter"],["down"],["enter"],["s"]])
+        XCTAssertEqual(try keys(f),[["/","m","o","d","e","l"],["enter"],["down"],["enter"],["down"],["s"]])
         XCTAssertEqual(try f.client.prompt(id,"fixture after picker")["ok"] as? Bool,true)
     }
 
@@ -142,9 +167,108 @@ final class ModelPickerTests: XCTestCase {
         f.screenText = codexModels.replacingOccurrences(of:"enter select",with:"enter default · s session")
         let singleEffort = try menuToken(f,id:id)
         XCTAssertThrowsError(try hc.modelPickerKey(id,token:singleEffort,key:"enter",stillSelected:{true}))
-        f.afterKeys = nil
-        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"s",stillSelected:{true})
+        f.afterKeys = { _ in f.screenText = self.codexBlank }
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:1",stillSelected:{true})
         XCTAssertEqual(try keys(f),[["down"],["s"]])
+    }
+
+    func testCodexNestedReasoningAndBackNeverApplyADefault() throws {
+        let f = fixture(), id = f.id(), hc = f.client.hc
+        f.screenText = codexReasoning
+        f.afterKeys = { key in
+            switch key {
+            case ["down"]:
+                if f.screenText == self.codexAdvanced {
+                    f.screenText = self.focus(self.codexAdvanced,from:1,to:2)
+                } else if f.screenText.contains("› 2. Medium") {
+                    f.screenText = self.focus(self.codexReasoning,from:2,to:3)
+                } else if f.screenText.contains("› 3. High") {
+                    f.screenText = self.focus(self.codexReasoning,from:2,to:4)
+                } else {
+                    f.screenText = self.focus(self.codexReasoning,from:2,to:5)
+                        .replacingOccurrences(of:"enter default · s session",with:"enter select")
+                }
+            case ["enter"]: f.screenText = self.codexAdvanced
+            case ["esc"]: f.screenText = self.codexReasoning
+            case ["s"]: f.screenText = self.codexBlank
+            default: XCTFail("Unexpected key")
+            }
+        }
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:5",stillSelected:{true})
+        XCTAssertEqual(f.screenText,codexAdvanced)
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"esc",stillSelected:{true})
+        XCTAssertEqual(f.screenText,codexReasoning)
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:5",stillSelected:{true})
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:2",stillSelected:{true})
+        XCTAssertEqual(try keys(f),[["down"],["down"],["down"],["enter"],["esc"],
+                                    ["down"],["down"],["down"],["enter"],["down"],["s"]])
+        XCTAssertEqual(try state(f,id:id)["ready"] as? Bool,true)
+    }
+
+    func testClaudeClickAppliesToTheCurrentSession() throws {
+        let f = fixture("claude"), id = f.id(), hc = f.client.hc
+        f.screenText = claudeModels
+        f.afterKeys = { key in
+            switch key {
+            case ["down"]:
+                f.screenText = self.claudeModels.replacingOccurrences(of:"❯ 2.",with:"  2.")
+                    .replacingOccurrences(of:"  3.",with:"❯ 3.")
+            case ["s"]: f.screenText = self.claudeBlank
+            default: XCTFail("Unexpected key")
+            }
+        }
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:3",stillSelected:{true})
+        XCTAssertEqual(try keys(f),[["down"],["s"]])
+        XCTAssertEqual(try state(f,id:id)["ready"] as? Bool,true)
+    }
+
+    func testChangedScreenBetweenFocusAndApplyStopsBeforeSubmit() throws {
+        let f = fixture(), id = f.id(), hc = f.client.hc
+        f.screenText = codexModels
+        f.afterKeys = { _ in
+            f.screenText = self.focus(self.codexModels,from:1,to:2)
+            f.afterRead = { f.screenText = "The terminal changed." }
+        }
+        XCTAssertThrowsError(try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:2",stillSelected:{true}))
+        XCTAssertEqual(try keys(f),[["down"]])
+    }
+
+    func testAcknowledgedApplyWithoutVerifiedOutcomeHoldsPrompt() throws {
+        let f = fixture(), id = f.id(), hc = f.client.hc
+        f.screenText = codexReasoning
+        XCTAssertThrowsError(try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"focus:2",stillSelected:{true}))
+        XCTAssertTrue(hc.modelPickerUncertain.contains(id))
+        f.screenText = codexBlank
+        XCTAssertThrowsError(try f.client.prompt(id,"fixture"))
+        XCTAssertEqual(try keys(f),[["s"]])
+    }
+
+    func testScrollDisclosureRevealsHiddenRowsWithoutApplying() throws {
+        let f = fixture(), id = f.id(), hc = f.client.hc
+        f.screenText = codexModels
+        f.afterKeys = { key in
+            XCTAssertEqual(key,["down"])
+            switch f.screenText {
+            case self.codexModels: f.screenText = self.focus(self.codexModels,from:1,to:2)
+            case self.focus(self.codexModels,from:1,to:2): f.screenText = self.focus(self.codexModels,from:1,to:3)
+            default: f.screenText = """
+                Select Model and Effort
+                ↑
+                  2. GPT-6.2-Astra  Our most capable model for complex coding and professional work.
+                  3. GPT-6.1 Terra  Efficient model that excels at visual understanding and computer use.
+                › 4. GPT-6.2-Luna   Lightweight model for straightforward work.
+                enter select · esc back
+                """
+            }
+        }
+        let initial = try XCTUnwrap(state(f,id:id)["menu"] as? Row)
+        XCTAssertEqual(initial["nextKey"] as? String,"reveal:down")
+        XCTAssertNil(initial["previousKey"])
+        try hc.modelPickerKey(id,token:menuToken(f,id:id),key:"reveal:down",stillSelected:{true})
+        let shifted = try XCTUnwrap(state(f,id:id)["menu"] as? Row)
+        XCTAssertEqual(shifted["previousKey"] as? String,"reveal:up")
+        XCTAssertNil(shifted["nextKey"])
+        XCTAssertEqual(try keys(f),[["down"],["down"],["down"]])
     }
 
     func testOpenDoesNotSubmitWhenStagedScreenOrSelectedChatChanges() throws {

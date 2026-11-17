@@ -38,18 +38,45 @@ $('orca-search').oninput=()=>renderOrcaPicker(true);
 $('orca-select').onchange=()=>{orcaChosen=$('orca-select').value;renderOrcaPicker();};
 $('orca-launch').onclick=()=>{if(!orcaApplies()||$('orca-launch').disabled)return;orcaBusy=true;orcaLaunchRequest=request('orcaLaunch',{model:orcaChosen});$('orca-status').textContent='Choose the project folder for this new OpenCode chat.';renderOrcaPicker();};
 function modelHeld(id){const picker=outputs.get(id)?.modelPicker;return modelAwaiting.has(id)||modelUncertain.has(id)||[...modelRequests.values()].some(x=>x.id===id)||!!(picker?.pending||picker?.uncertain||picker?.menu);}
+let modelChoicesView = '';
+function renderModelChoices(menu, disabled) {
+  const choices = [...(menu?.choices || [])];
+  if (menu?.previousKey) choices.unshift({key:menu.previousKey, label:'Previous options'});
+  if (menu?.nextKey) choices.push({key:menu.nextKey, label:'More options'});
+  const signature = JSON.stringify([selected, menu?.heading, choices.map(({key,label,detail}) => [key,label,detail])]);
+  const list = $('model-choices');
+  if (signature !== modelChoicesView) {
+    modelChoicesView = signature;
+    list.replaceChildren(...choices.map(choice => {
+      const button = el('button');
+      button.type = 'button';
+      button.append(el('span', choice.label, 'model-label'));
+      if (choice.detail) button.append(el('span', choice.detail, 'model-detail'));
+      button.onclick = () => {
+        if (signature === modelChoicesView) modelAction('modelPickerKey', choice.key);
+      };
+      return button;
+    }));
+  }
+  for (const button of list.children) button.disabled = disabled;
+}
 function renderModelPicker(){
   const a=active(),picker=outputs.get(selected)?.modelPicker,visible=!!picker&&a?.online&&a.machine_id==='local'&&['claude','codex'].includes(a.agent),open=visible&&(modelOpenIDs.has(selected)||modelHeld(selected));
   $('model-toggle').hidden=!visible;$('model-toggle').setAttribute('aria-expanded',String(open));$('model-panel').hidden=!open;
   if(!visible)return;
   const inFlight=modelAwaiting.has(selected)||[...modelRequests.values()].some(x=>x.id===selected);
   const pending=inFlight||picker.pending,unsure=modelUncertain.has(selected)||picker.uncertain,menu=picker.menu;
-  $('model-heading').textContent=menu?.heading||'Session model';$('model-screen').textContent=menu?.text||'';
-  $('model-choices').replaceChildren(...(menu?.choices||[]).map(choice=>{const b=el('button',choice.label);b.type='button';b.disabled=!!pending||!!unsure||!menu.token;b.setAttribute('aria-pressed',String(!!choice.selected));b.title='Highlight '+choice.label;b.onclick=()=>modelAction('modelPickerKey',choice.key);return b;}));
-  $('model-status').textContent=unsure?'Check the session in Herdr before continuing.':pending?'Waiting for the session…':menu?(menu.applyKey==='s'?'Use selected applies to this session only.':'Choose a model using the controls below.'):picker.ready?'Ready to choose a model.':'Wait for an empty, ready session in Herdr.';
+  $('model-heading').textContent=menu?.heading||'Session model';
+  renderModelChoices(menu, !!pending || !!unsure || !menu?.token);
+  let status = '';
+  if (unsure) status = 'Check the session in Herdr before continuing.';
+  else if (pending) status = 'Waiting for the session…';
+  else if (menu) status = (menu.choices?.length || menu.previousKey || menu.nextKey) ? menu.note || '' : 'No supported choices on this screen. Click Model to go back.';
+  else if (!picker.ready) status = 'Wait for an empty, ready session in Herdr.';
+  $('model-status').textContent = status.replace('←/→ to adjust', '(adjust in Herdr)');
+  $('model-status').hidden=!$('model-status').textContent;
+  $('model-toggle').title=menu?'Go back in the model picker':'Choose the session model';
   $('model-open').hidden=!!menu||!!unsure;$('model-open').disabled=!!pending||!picker.ready||sending||queueSaving;
-  for(const key of ['up','down','apply','cancel']){const button=$('model-'+key);button.hidden=!menu||!!unsure;button.disabled=!!pending||!menu?.token||(key==='apply'&&!['enter','s'].includes(menu?.applyKey));}
-  $('model-apply').textContent=menu?.applyKey==='enter'?'Continue':'Use selected';
   $('model-reconcile').hidden=!unsure;$('model-reconcile').disabled=inFlight;
 }
 function modelAction(op,key){
@@ -57,14 +84,20 @@ function modelAction(op,key){
   if(op==='openModelPicker'&&(!picker.ready||picker.menu||picker.pending||picker.uncertain||modelUncertain.has(id)||sending||queueSaving))return;
   if(op==='modelPickerKey'&&(!key||!picker.menu?.token||picker.pending||picker.uncertain||modelUncertain.has(id)))return;
   if(op==='reconcileModelPicker'&&!picker.uncertain&&!modelUncertain.has(id))return;
-  const extra={id};if(op==='modelPickerKey'){extra.key=key;extra.token=picker.menu.token;}
+  const extra={id};if(op==='modelPickerKey'){extra.key=key;extra.token=picker.menu.token;modelOpenIDs.delete(id);}
   modelAwaiting.add(id);const requestID=request(op,extra);modelRequests.set(requestID,{id,op});renderHeader();
 }
-$('model-toggle').onclick=()=>{if(modelOpenIDs.has(selected)&&!modelHeld(selected))modelOpenIDs.delete(selected);else{modelOpenIDs.add(selected);const picker=outputs.get(selected)?.modelPicker;if(picker?.ready&&!picker.menu&&!modelHeld(selected))modelAction('openModelPicker');}renderModelPicker();};
+$('model-toggle').onclick=()=>{
+  const picker=outputs.get(selected)?.modelPicker;
+  if(picker?.menu) modelAction('modelPickerKey','esc');
+  else if(modelOpenIDs.has(selected)&&!modelHeld(selected)) modelOpenIDs.delete(selected);
+  else {
+    modelOpenIDs.add(selected);
+    if(picker?.ready&&!modelHeld(selected)) modelAction('openModelPicker');
+  }
+  renderModelPicker();
+};
 $('model-open').onclick=()=>modelAction('openModelPicker');
-for(const key of ['up','down'])$('model-'+key).onclick=()=>modelAction('modelPickerKey',key);
-$('model-apply').onclick=()=>modelAction('modelPickerKey',outputs.get(selected)?.modelPicker?.menu?.applyKey);
-$('model-cancel').onclick=()=>modelAction('modelPickerKey','esc');
 $('model-reconcile').onclick=()=>modelAction('reconcileModelPicker');
 function active(){const a=agents.find(a=>a.id===selected);if(a||!selected.startsWith('shepherdr:'))return a;const r=linked(selected);return r&&{id:r.view_id,online:true,agent_status:'readonly',agent:'shepherdr',workspace_label:r.space||r.title,machine_label:r.machine};}
 function statusLabel(a){return window.HUDUtilities?.status(a,completed.has(a?.id))||a?.agent_status||'Unknown';}

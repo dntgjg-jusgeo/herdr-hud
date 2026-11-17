@@ -59,16 +59,30 @@ test('prefixed live screen formats active approval and preserves exact full cont
 test('model picker holds prompts per session and uses the observed session-only key',()=>{
  const h=harness();h.eval("agents[0].agent_status='idle';agents[0].can_prompt=true;agents[0].machine_id='local';outputs.set('A',{text:'ready',modelPicker:{ready:true,pending:false,uncertain:false}});renderHeader()");
  h.$('prompt').value='Keep this draft';h.$('model-toggle').click();const open=h.messages.find(m=>m.op==='openModelPicker');assert.equal(open.id,'A');assert.equal(h.$('prompt').disabled,true);assert.equal(h.$('prompt').value,'Keep this draft');
- h.window.receive({type:'openModelPicker',data:{id:'A',requestID:open.requestID}});const read=h.messages.filter(m=>m.op==='output').at(-1);h.window.receive({type:'output',data:{id:'A',requestID:read.requestID,text:'menu',modelPicker:{ready:false,pending:false,uncertain:false,menu:{heading:'Models',text:'Sonnet',applyKey:'s',token:'observed'}}}});
- h.$('model-apply').click();const key=h.messages.find(m=>m.op==='modelPickerKey');assert.equal(key.key,'s');assert.equal(key.token,'observed');assert.equal(h.$('send').disabled,true);
+ h.window.receive({type:'openModelPicker',data:{id:'A',requestID:open.requestID}});const read=h.messages.filter(m=>m.op==='output').at(-1);h.window.receive({type:'output',data:{id:'A',requestID:read.requestID,text:'menu',modelPicker:{ready:false,pending:false,uncertain:false,menu:{heading:'Models',choices:[{key:'focus:2',label:'Sonnet',detail:'Balanced'}],token:'observed'}}}});
+ const button=h.$('model-choices').children[0];
+ assert.equal(button.children[1].textContent,'Balanced');
+ h.eval("renderModelPicker()");assert.equal(h.$('model-choices').children[0],button);
+ button.click();button.click();assert.equal(h.messages.filter(m=>m.op==='modelPickerKey').length,1);const key=h.messages.find(m=>m.op==='modelPickerKey');assert.equal(key.key,'focus:2');assert.equal(key.token,'observed');assert.equal(h.$('send').disabled,true);
  h.eval("agents.push({id:'B',online:true,agent:'claude',machine_id:'local',agent_status:'idle'});select('B')");assert.equal(h.eval("modelHeld('A')"),true);assert.equal(h.eval("modelHeld('B')"),false);
 });
-test('uncertain model key requires explicit reconciliation and missing apply key cannot send',()=>{
+test('Model header backs out of an open menu and uncertain input requires reconciliation',()=>{
  const h=harness();h.eval("agents[0].agent_status='idle';agents[0].machine_id='local';outputs.set('A',{text:'menu',modelPicker:{ready:false,pending:false,uncertain:false,menu:{heading:'Models',text:'More',token:'t'}}});renderHeader()");
- assert.equal(h.$('model-apply').disabled,true);h.$('model-down').click();const key=h.messages.find(m=>m.op==='modelPickerKey');h.window.receive({type:'modelPickerKey',data:{id:'A',requestID:key.requestID,uncertain:true,error:'Uncertain'}});
+ assert.equal(h.$('model-choices').children.length,0);h.$('model-toggle').click();const key=h.messages.find(m=>m.op==='modelPickerKey');assert.equal(key.key,'esc');h.window.receive({type:'modelPickerKey',data:{id:'A',requestID:key.requestID,uncertain:true,error:'Uncertain'}});
  assert.equal(h.$('model-reconcile').hidden,false);assert.equal(h.eval("modelHeld('A')"),true);
  const read=h.messages.filter(m=>m.op==='output').at(-1);
  h.window.receive({type:'output',data:{id:'A',requestID:read.requestID,text:'Awaiting manual check',modelPicker:{ready:false,pending:true,uncertain:true}}});
  assert.equal(h.$('model-reconcile').disabled,false);h.$('model-reconcile').click();
  assert.equal(h.messages.find(m=>m.op==='reconcileModelPicker')?.id,'A');
+});
+
+test('reasoning and overflow choices use the observed row and survive refresh',()=>{
+ const h=harness();
+ h.eval("agents[0].machine_id='local';outputs.set('A',{modelPicker:{menu:{heading:'Select Reasoning Level for GPT-6.2-Astra',token:'old',nextKey:'reveal:down',choices:[{key:'focus:2',label:'Medium',detail:'Balances speed and depth'}]}}});renderModelPicker()");
+ const [medium,more]=h.$('model-choices').children;
+ assert.equal(more.children[0].textContent,'More options');
+ h.eval("outputs.get('A').modelPicker.menu.token='fresh';renderModelPicker()");
+ assert.equal(h.$('model-choices').children[0],medium);
+ medium.click();
+ assert.deepEqual(h.messages.filter(m=>m.op==='modelPickerKey').map(m=>[m.id,m.key,m.token]),[['A','focus:2','fresh']]);
 });
