@@ -11,6 +11,14 @@ function harness(){
  evalCode("supportsTerminalControls=true;agents=[{id:'A',online:true,agent:'codex',agent_status:'blocked',input_kind:'permission',can_prompt:false}];selected='A';opened=true;outputs.set('A',{text:'approval',terminalControl:{token:'token',text:'Live <script>plain text</script>',uncertain:false}});renderHeader()");
  return {messages,window,eval:evalCode,$:id=>document.getElementById(id)};
 }
+test('chat heading displays the active model and clears it on session change',()=>{
+ const h=harness();
+ h.window.receive({type:'output',data:{id:'A',provider:'codex',screenComplete:true,text:'• Recent reply\n› Ask Codex anything\n  GPT-6.2-Astra medium · ~/repo'}});
+ assert.match(h.$('identity').textContent,/GPT-6\.2-Astra · medium$/);
+ h.eval("agents.push({id:'B',online:true,agent:'claude',agent_status:'idle',reported_model:'claude-opus-4-8'});select('B')");
+ assert.match(h.$('identity').textContent,/claude-opus-4-8$/);
+ assert.doesNotMatch(h.$('identity').textContent,/Astra|medium/);
+});
 test('manual key shows exact text, sends one fixed key, locks and refreshes without repeating stale errors',()=>{
  const h=harness();assert.equal(h.$('terminal-controls').hidden,false);assert.equal(h.$('terminal-screen').children[0].textContent,'Live <script>plain text</script>');assert.equal(h.$('send').disabled,true);
  h.$('terminal-down').click();h.$('terminal-enter').click();let keys=h.messages.filter(m=>m.op==='terminalKey');assert.equal(keys.length,1);assert.equal(keys[0].key,'down');assert.equal(keys[0].token,'token');

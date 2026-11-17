@@ -99,6 +99,10 @@ final class HCClient {
                        "tab_id":labels["herdr.tab"] ?? address,"tab_label":title.isEmpty ? address : title,"name":title,
                        "machine_id":machineID,"machine_label":label,"online":true]
         if machineID == "local", cwd.hasPrefix("/") { row["preview_directory"] = cwd }
+        if reportedByProvider || (provider == "opencode" && app == "opencode") {
+            row["reported_model"] = status["model"] as? String
+            row["reported_reasoning_effort"] = status["reasoning_effort"] as? String
+        }
         row["id"] = encode([core, address, identity])
         return row
     }
@@ -136,7 +140,7 @@ final class HCClient {
         let row = try resolve(id)
         let reply = try rpc([("terminal.read",["terminal":row["terminal_id"]!,"lines":180])])[0]
         guard let text = reply["text"] as? String else { throw HUDError("hc returned unsupported terminal output.") }
-        var output: Row = ["id":id,"provider":row["agent"]!,"text":text]
+        var output: Row = ["id":id,"provider":row["agent"]!,"text":text,"screenComplete":reply["complete"] as? Bool == true]
         if Self.acceptsKeys(row) {
             let screen = try liveScreen(row)
             let current = try resolve(id)

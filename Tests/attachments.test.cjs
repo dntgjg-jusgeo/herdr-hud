@@ -124,3 +124,21 @@ test('legacy host image path still reads and previews inline images',async()=>{
 test('native preview and cancellation errors appear without mutating drafts',()=>{
  const h=harness();receive(h,'openFile',{error:'preview failed'});assert.equal(h.$('notice').textContent,'preview failed');receive(h,'fileCancel',{error:'cancel failed'});assert.equal(h.$('notice').textContent,'cancel failed');assert.equal(h.messages.some(m=>m.op==='prompt'),false);
 });
+
+test('chat settings keep shortcut and handoff choices independent per agent',()=>{
+ const h=harness();
+ h.context.window.HUDHandoff={eligible:()=>true};
+ h.eval('supportsQuick=true;supportsHandoff=true;renderHeader()');
+ assert.equal(h.$('quick-prompts').hidden,true);
+ assert.equal(h.$('handoff-toolbar').hidden,true);
+ h.$('chat-tools').click();
+ h.$('show-handoff').checked=true;
+ h.$('show-handoff').onchange();
+ assert.equal(h.$('handoff-toolbar').hidden,false);
+ assert.equal(h.$('quick-prompts').hidden,true);
+ assert.equal(h.messages.at(-1).chatID,'A');
+ h.eval("selected='B';renderHeader()");
+ assert.equal(h.$('handoff-toolbar').hidden,true);
+ h.eval("selected='A';renderHeader()");
+ assert.equal(h.$('handoff-toolbar').hidden,false);
+});

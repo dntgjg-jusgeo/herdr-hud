@@ -38,6 +38,20 @@ final class CodexApprovalTests:XCTestCase {
         XCTAssertThrowsError(try p.respond(token:card["token"] as! String,choice:"always"))
         XCTAssertEqual((card["choices"] as! [Row]).count,2)
     }
+    func testModelMetadataUsesExactThreadAndLatestSettings()throws {
+        var state=CodexApprovals.ProtocolState(threadID:"thread-A",epoch:"fixture")
+        _=try state.receive(["id":"hud-fixture-initialize","result":Row()])
+        _=try state.receive(["id":"hud-fixture-loaded","result":["data":["thread-A"]]])
+        _=try state.receive(["id":"hud-fixture-resume","result":["thread":["id":"thread-A"],"model":"gpt-6-astra","reasoningEffort":"medium"]])
+        XCTAssertEqual(state.snapshot["model"] as? String,"gpt-6-astra")
+        XCTAssertEqual(state.snapshot["reasoningEffort"] as? String,"medium")
+        let updated:Row=["model":"gpt-6.2-astra","effort":"high"]
+        _=try state.receive(["method":"thread/settings/updated","params":["threadId":"thread-B","threadSettings":updated]])
+        XCTAssertEqual(state.snapshot["model"] as? String,"gpt-6-astra")
+        _=try state.receive(["method":"thread/settings/updated","params":["threadId":"thread-A","threadSettings":updated]])
+        XCTAssertEqual(state.snapshot["model"] as? String,"gpt-6.2-astra")
+        XCTAssertEqual(state.snapshot["reasoningEffort"] as? String,"high")
+    }
     func testReplayBufferedUntilReadyAndStrictIdentityChecks()throws{
         var p=CodexApprovals.ProtocolState(threadID:"thread-A",epoch:"fixture")
         _=try p.receive(approval());XCTAssertTrue((p.snapshot["cards"] as! [Row]).isEmpty)

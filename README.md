@@ -98,6 +98,7 @@ run the packaged app. Xcode command-line tools are needed to build from source.
 - **Files in replies:** local file buttons open supported images/PDFs in Preview,
   text/code in TextEdit and office documents in Quick Look. Remote files and
   executable attachments are not offered.
+- **Chat settings:** The gear in each chat header lets you show prompt shortcuts and handoff independently. Both start hidden. The HUD remembers your choices for each session.
 - **Quick prompts:** **Edit shortcuts** saves up to six named prompt buttons.
   Clicking one adds text to your draft; you still choose Send.
 - **Guarded number keys:** recognized menus can show literal **Send 1–4** buttons
@@ -108,7 +109,7 @@ run the packaged app. Xcode command-line tools are needed to build from source.
 
 ### Agent handoff on macOS
 
-Click **Handoff…** above the composer to prepare a briefing for another local
+Enable **Show handoff** in the chat gear, then click **Handoff…** above the composer to prepare a briefing for another local
 Claude, Codex or managed OpenCode session. Choose the destination, edit the brief,
 and use **Add to target draft**. The HUD packages a bounded snapshot of recent
 output, source project details and available file references; it does not claim

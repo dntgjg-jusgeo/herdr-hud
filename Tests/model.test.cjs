@@ -1,5 +1,5 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {sorted,alerts,parse}=require('../Sources/HerdrHUD/Resources/model.js');
+const {sorted,alerts,parse,sessionModel}=require('../Sources/HerdrHUD/Resources/model.js');
 const row=(id,status)=>({id,terminal_id:id,agent_status:status,online:true});
 test('attention before working before read idle',()=>assert.deepEqual(sorted([row('a','idle'),row('b','working'),row('c','blocked')],new Set()).map(a=>a.id),['c','b','a']));
 test('status alerts exclude baseline, replacements, and offline recovery',()=>{assert.equal(alerts([],[row('a','done')]).length,0);assert.equal(alerts([row('a','working')],[row('a','done')]).length,1);assert.equal(alerts([row('a','working')],[{...row('a','done'),terminal_id:'new'}]).length,0);assert.equal(alerts([{...row('a','working'),online:false}],[row('a','done')]).length,0)});
@@ -17,6 +17,24 @@ test('submitted placeholder text and quoted model footer remain visible',()=>{
   assert.equal(real.blocks[0].text,'Ask Codex to do anything');
   const example='• Example\n```\n› Ask Codex to do anything\n  GPT-6-Astra medium · ~/repo\n```';
   assert.match(parse(example,'codex').text,/Ask Codex to do anything/);
+});
+test('session heading preserves exact model version and reported reasoning',()=>{
+  const agent={id:'codex-1',agent:'codex',online:true};
+  const output={id:agent.id,provider:'codex',screenComplete:true,text:'• Reply\n› Ask Codex anything\n  GPT-6-Astra medium · ~/repo'};
+  assert.equal(sessionModel(agent,output),'GPT-6-Astra · medium');
+  assert.equal(sessionModel(agent,{...output,text:output.text.replace('6-Astra medium','6.2-Astra high')}),'GPT-6.2-Astra · high');
+  assert.equal(sessionModel(agent,output,{id:agent.id,connected:true,model:'gpt-6.2-astra',reasoningEffort:'xhigh'}),'gpt-6.2-astra · xhigh');
+  assert.equal(sessionModel(agent,{...output,screenComplete:false}),'');
+  assert.equal(sessionModel(agent,{...output,id:'codex-2'},{id:'codex-2',connected:true,model:'gpt-6.2-astra'}),'');
+  assert.equal(sessionModel(agent,{...output,text:'• I am GPT-6.2-Astra with medium effort.'}),'');
+  assert.equal(sessionModel({...agent,online:false},output),'');
+});
+test('Claude and OpenCode heading uses provider-reported metadata',()=>{
+  const claude={id:'claude-1',agent:'claude',online:true,reported_model:'claude-opus-4-8',reported_reasoning_effort:'high'};
+  const openCode={id:'code-1',agent:'opencode',online:true,orca_managed:true,orca_model:'deepseek/deepseek-v4.1-flash'};
+  assert.equal(sessionModel(claude),'claude-opus-4-8 · high');
+  assert.equal(sessionModel(openCode),'deepseek/deepseek-v4.1-flash');
+  assert.equal(sessionModel({...openCode,orca_managed:false}),'');
 });
 
 const computerUseMenu='Field 1/1\n\nAllow Computer Use to use "Demo Drag Test"?\nApp: /Applications/Demo.app\n\n› 1. Allow\n  2. Allow for this session\n  3. Always allow\n  4. Cancel\n\nenter to submit | esc to cancel';

@@ -43,6 +43,7 @@ function name(a){return a.tab_label||a.name||a.pane_id||'Agent';}
 function rows(){return rosterMode==='shepherdr'&&supportsShepherdr?HUDModel.shepherdrRows(shepherdr,agents):null;}
 function linked(id){return id?rows()?.find(r=>r.view_id===id):undefined;}
 function label(a){return linked(a.id)?.title||name(a);}
+function sessionModel(a){return a?HUDModel.sessionModel(a,outputs.get(a.id),nativeApprovalStates.get(a.id)):'';}
 function el(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
 function notice(text){$('notice').hidden=!text;$('notice').textContent=text;}
 function badge(){const list=rows();post({op:'badge',count:list?list.filter(r=>r.need||unread.has(r.agent_id)).length:agents.filter(a=>a.agent_status==='blocked'||unread.has(a.id)).length});}
@@ -62,11 +63,12 @@ function renderRoster(){
   const items=HUDModel.sorted(agents,unread).filter(a=>`${name(a)} ${a.workspace_label} ${a.machine_label} ${a.agent}`.toLowerCase().includes(filter));
   roster.replaceChildren(...items.map(a=>{const button=el('button',undefined,'agent'+(a.id===selected?' selected':'')+(!a.online?' offline':''));button.setAttribute('aria-pressed',String(a.id===selected));
     const title=el('div',undefined,'agent-title');title.append(el('span',undefined,'dot '+(a.agent_status==='working'?'busy':a.agent_status==='blocked'||unread.has(a.id)?'attention':'')),el('span',name(a)));if(unread.has(a.id))title.append(el('span','New','unread-pill'));button.append(title);
-    const meta=el('div',undefined,'agent-meta');meta.append(el('div',a.workspace_label||a.workspace_id),el('div',a.machine_label+' · '+(a.agent||'agent')),el('div',statusLabel(a),'agent-state'));button.append(meta);const metadata=HUDModel.parse(outputs.get(a.id)?.text||'',a.agent);button.title=metadata.model?`${metadata.model} ${metadata.reasoning}`:a.pane_id;button.onclick=()=>select(a.id);return button;}));
+    const meta=el('div',undefined,'agent-meta');meta.append(el('div',a.workspace_label||a.workspace_id),el('div',a.machine_label+' · '+(a.agent||'agent')),el('div',statusLabel(a),'agent-state'));button.append(meta);button.title=sessionModel(a)||a.pane_id;button.onclick=()=>select(a.id);return button;}));
   if(!items.length)roster.append(el('p',agents.length?'No matching agents.':'No agents found. Start an agent in Herdr.','empty'));roster.scrollTop=scroll;
 }
 function select(id){
   orcaStandalone=false;
+  if(id!==selected && $('chat-settings').open) $('chat-settings').close();
   if(id!==selected)closeAttachmentPreview(false);
   if(selected)drafts.set(selected,$('prompt').value);selectedRow=linked(id)?.key||'';selected=id;request('preferences',{selectedAgent:id});selectionEpoch++;lastRendered='';$('prompt').value=drafts.get(id)||'';
   lastOutput=outputs.get(id)?.text||'';queuedOutput.delete(id);unread.delete(id);badge();if(previewMode)loadPreviews();renderRoster();renderHeader();renderOutput();read();if(supportsNativeApprovals)request('nativeApprovals',{id});
@@ -77,6 +79,7 @@ function steerState(a){const s=nativeApprovalStates.get(a?.id);return a?.agent_s
 function renderHeader(){
   renderOrcaPicker();renderHandoff();
   const a=active(),row=a&&linked(a.id);$('title').textContent=a?label(a):draftLabels.get(selected)||'Select an agent';$('identity').textContent=row?`${row.kind==='task'?row.space+' · ':''}${row.machine} · ${row.state} · ${a.agent}`:a?`${a.workspace_label} · ${a.machine_label} · ${a.agent}`:'Your configured Herdr machines appear automatically';
+  const model=sessionModel(a);$('title').title=model;if(model)$('identity').textContent+=' · '+model;
   $('previews-tab').hidden=!supportsPreviews;$('preview-folder').disabled=!a||a.machine_id!=='local';$('preview-refresh').disabled=!a||a.machine_id!=='local';
   $('agent-status').textContent=statusLabel(a);$('agent-status').className='status-chip '+(a?.agent_status||'unknown');
   const state=a?.agent_status||'';const busy=state==='working';$('working').hidden=!busy;
@@ -105,7 +108,6 @@ function renderOutput(){
   else data.blocks.forEach((block,index)=>{const node=el('div',undefined,'block '+block.kind);
     if(block.kind==='approval'){renderApproval(block,node);}else if(block.kind==='tool'){const detail=el('details');detail.dataset.key=block.kind+block.text.split('\n')[0]+index;detail.open=expanded.has(detail.dataset.key);detail.append(el('summary',block.text.split('\n')[0]),el('pre',block.text));node.append(detail);}
     else{if(block.kind==='prompt')node.append(el('div','You','block-label'));else if(block.kind==='reply')node.append(el('div',data.model||a.agent,'block-label'));inline(block.text,node);}out.append(node);});
-  if(data.model){$('title').title=`${data.model} ${data.reasoning}`;for(const button of $('roster').children)if(button.getAttribute('aria-pressed')==='true')button.title=`${data.model} ${data.reasoning}`;}
   $('chat').setAttribute('aria-pressed',String(!previewMode&&!terminal));$('terminal').setAttribute('aria-pressed',String(!previewMode&&terminal));
   out.scrollTop=first||wasBottom?out.scrollHeight:scroll;
 }
@@ -477,7 +479,7 @@ window.receive=({type,data})=>{
   else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}
   else if(type==='notice'){notice(data.message);}
 };
-window.handleEscape=()=>{if($('handoff-dialog').open){closeHandoff();return;}if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
+window.handleEscape=()=>{if($('chat-settings').open){$('chat-settings').close();return;}if($('handoff-dialog').open){closeHandoff();return;}if($('new-codex-dialog').open){if(!newCodexBusy)$('new-codex-dialog').close();return;}if($('quick-editor').open){$('quick-editor').close();return;}if($('draft-recovery').open){$('draft-recovery').close();return;}if(attachmentPreview)closeAttachmentPreview();else request('close');};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();window.handleEscape();}});
 $('refresh').onclick=()=>request('refresh');$('close').onclick=()=>request('close');$('hide').onclick=()=>request('hide');$('send').onclick=send;
 $('reconcile').onclick=()=>{if(active()?.orca_managed){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('orcaReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}if(nativeApprovalStates.get(selected)?.steerUncertain){if([...steerReconcileRequests.values()].includes(selected))return;const requestID=request('nativeSteerReconcile',{id:selected});steerReconcileRequests.set(requestID,selected);return;}uncertain.delete(selected);draftChanged();notice('');renderHeader();};
@@ -508,12 +510,34 @@ function renderFileLinks(){
   const signature=JSON.stringify([selected,items]);if(box._signature===signature)return;box._signature=signature;
   box.replaceChildren(...items.map(item=>{const b=el('button',item.name);b.title=item.path;b.onclick=()=>request('openFileLink',{id:selected,token:item.token});return b;}));
 }
+let chatToolOptions = new Map();
+function chatTools() { return chatToolOptions.get(selected) || {}; }
+$('chat-tools').onclick = () => {
+  $('show-shortcuts').checked = !!chatTools().shortcuts;
+  $('show-shortcuts').disabled = !supportsQuick;
+  $('show-handoff').checked = !!chatTools().handoff;
+  $('show-handoff').disabled = !supportsHandoff || !window.HUDHandoff?.eligible(active());
+  $('chat-settings').showModal();
+};
+$('settings-done').onclick = () => $('chat-settings').close();
+function saveChatTools() {
+  if (!active()) return;
+  const options = {shortcuts:$('show-shortcuts').checked, handoff:$('show-handoff').checked};
+  chatToolOptions.set(selected, options);
+  request('preferences', {chatTools:options, chatID:selected});
+  renderHeader();
+}
+$('show-shortcuts').onchange = saveChatTools;
+$('show-handoff').onchange = saveChatTools;
 function renderQuickPrompts(){
+  $('chat-tools').hidden=!active() || !(supportsQuick || supportsHandoff);
+  $('quick-buttons').hidden=$('edit-quick').hidden=!chatTools().shortcuts;
   $('quick-prompts').hidden=!supportsQuick;
   if(!supportsQuick)return;
   const target=$('quick-buttons'),signature=JSON.stringify([quickPrompts,!!active(),draftsLoaded]);
   if(target._signature!==signature){target._signature=signature;target.replaceChildren(...quickPrompts.map(item=>{const b=el('button',item.label);b.title=item.text;b.disabled=!active()||!draftsLoaded;b.onclick=()=>{const input=$('prompt');if(input.disabled)return;input.value+=(input.value.trim()?'\n\n':'')+item.text;input.oninput();input.focus();};return b;}));}
   $('recover-drafts').hidden=![...drafts.keys(),...attachments.keys(),...queues.keys()].some(id=>id!==selected&&((drafts.get(id)||'').length||imagesFor(id).length||queueFor(id).length));
+  $('quick-prompts').hidden=!chatTools().shortcuts && $('recover-drafts').hidden;
 }
 function editQuickPrompts(){
   const list=$('quick-editor-rows');list.replaceChildren();
@@ -540,6 +564,7 @@ function beforeMutation(action,failed){
 }
 function configureLocalFeatures(data){
   supportsHandoff=!!data.agentHandoffSupported&&!!window.webkit?.messageHandlers?.hud&&!!window.HUDHandoff;
+  if(data.chatTools) chatToolOptions=new Map(Object.entries(data.chatTools));
   supportsQuick=!!data.quickPromptsSupported;if(data.quickPrompts)quickPrompts=data.quickPrompts;
   if(data.draftsSupported&&!supportsDrafts&&window.HUDDrafts){supportsDrafts=true;draftsLoaded=false;request('loadDrafts');renderHeader();}
 }
@@ -588,7 +613,7 @@ function checkHandoff(){
   return target;
 }
 function renderHandoff(){
-  $('handoff-toolbar').hidden=!supportsHandoff||!window.HUDHandoff?.eligible(active());
+  $('handoff-toolbar').hidden=!chatTools().handoff||!supportsHandoff||!window.HUDHandoff?.eligible(active());
   $('handoff-open').disabled=handoffSaving||!supportsDrafts||!draftsLoaded;
   if(!handoff)return;
   for(const id of ['handoff-target','handoff-brief','handoff-include-text','handoff-include-files','handoff-switch','handoff-cancel'])$(id).disabled=handoffSaving;

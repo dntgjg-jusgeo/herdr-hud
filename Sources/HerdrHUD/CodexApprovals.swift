@@ -29,12 +29,13 @@ final class CodexApprovals {
         let threadID:String, epoch:String
         var cycle=0,turnGeneration=0,steerSequence=0
         var activeTurnID="",working=false,steerUncertain=false
+        var model="",reasoningEffort=""
         var soliciting:[WireID:String]=[:],probeGeneration:Int?,probeID:String?,steerPending:PendingSteer?,steerOutcome:Row?
         var canSteer:Bool {connected && working && !activeTurnID.isEmpty && cards.isEmpty && soliciting.isEmpty && steerPending == nil && !steerUncertain}
         var phase="initialize", cards:[WireID:Card]=[:], order:[WireID]=[], resolved=Set<WireID>(), retiredTurns=Set<String>()
         init(threadID:String,epoch:String=UUID().uuidString) { self.threadID=threadID;self.epoch=epoch }
         var connected:Bool { phase == "ready" }
-        var snapshot:Row { ["connected":connected,"status":phase == "waiting" ? "Waiting for the first prompt in this new Codex chat." : connected ? "Connected to Codex approvals." : "Connecting to Codex approvals…","cards":connected ? order.compactMap{cards[$0]?.row} : [Row](),"threadId":threadID,"canSteer":canSteer,"activeTurnId":activeTurnID,"steerUncertain":steerUncertain] }
+        var snapshot:Row { ["connected":connected,"status":phase == "waiting" ? "Waiting for the first prompt in this new Codex chat." : connected ? "Connected to Codex approvals." : "Connecting to Codex approvals…","cards":connected ? order.compactMap{cards[$0]?.row} : [Row](),"threadId":threadID,"canSteer":canSteer,"activeTurnId":activeTurnID,"steerUncertain":steerUncertain,"model":connected ? model:"","reasoningEffort":connected ? reasoningEffort:""] }
         func request(_ stage:String,_ method:String,_ params:Row)->Row { ["id":"hud-"+epoch+"-"+stage+(cycle == 0 ? "":"-"+String(cycle)),"method":method,"params":params] }
         func begin()->Row { request("initialize","initialize",["clientInfo":["name":"herdr_hud","title":"Herdr HUD","version":"1"],"capabilities":["experimentalApi":true]]) }
         mutating func receive(_ row:Row) throws -> [Row] {
@@ -42,6 +43,10 @@ final class CodexApprovals {
                 let params=row["params"] as? Row ?? [:]
                 if ["thread/closed","thread/archived","thread/deleted"].contains(method),params["threadId"] as? String == threadID {
                     throw HUDError("This Codex chat closed. Use its terminal to continue.")
+                }
+                if method == "thread/settings/updated",params["threadId"] as? String == threadID,let settings=params["threadSettings"] as? Row {
+                    updateModel(settings,effortKey:"effort")
+                    return []
                 }
                 if method == "turn/started",params["threadId"] as? String == threadID,let turn=params["turn"] as? Row {
                     turnGeneration += 1
@@ -127,9 +132,16 @@ final class CodexApprovals {
                 let thread=result["thread"] as! Row
                 let status=thread["status"] as? Row ?? [:]
                 working=status["type"] as? String == "active" && (status["activeFlags"] as? [String]) == []
+                updateModel(result,effortKey:"reasoningEffort")
                 phase="ready";return [beginProbe()]
             default:return []
             }
+        }
+        private mutating func updateModel(_ fields:Row,effortKey:String) {
+            let reportedModel = fields["model"] as? String ?? ""
+            model = reportedModel.range(of:"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,119}$",options:.regularExpression) != nil ? reportedModel : ""
+            let effort = fields[effortKey] as? String ?? ""
+            reasoningEffort = ["none","minimal","low","medium","high","xhigh","max","ultra"].contains(effort) ? effort : ""
         }
         private mutating func beginProbe()->Row {
             probeGeneration=turnGeneration;let id="hud-"+epoch+"-turnprobe-"+UUID().uuidString;probeID=id

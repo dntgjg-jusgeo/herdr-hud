@@ -56,6 +56,23 @@
       else body.push(line);if(line.trimStart().startsWith('```'))fenced=!fenced;
     }flush();return {text:lines.join('\n').trimEnd(),model,reasoning,blocks};
   }
+  function sessionModel(agent,output,native){
+    if(!agent?.online)return '';
+    const reported=(model,reasoning)=>{
+      if(typeof model!=='string'||!(/^[a-z0-9][a-z0-9_./:-]{0,119}$/i.test(model)||/^Claude (?:Opus|Sonnet|Haiku) [0-9]+(?:\.[0-9]+)*$/i.test(model)))return '';
+      return [model,typeof reasoning==='string'&&/^(none|minimal|low|medium|high|xhigh|max|ultra)$/i.test(reasoning)?reasoning.toLowerCase():''].filter(Boolean).join(' · ');
+    };
+    if(agent.agent==='codex'){
+      const exact=native?.id===agent.id&&native.connected&&reported(native.model,native.reasoningEffort);
+      if(exact)return exact;
+      if(output?.id===agent.id&&output.provider==='codex'&&output.screenComplete!==false){
+        const {model,reasoning}=parse(output.text||'','codex');
+        const screen=reported(model,reasoning);if(screen)return screen;
+      }
+    }
+    return reported(agent.reported_model,agent.reported_reasoning_effort)||
+      (agent.agent==='opencode'&&agent.orca_managed===true?reported(agent.orca_model):'');
+  }
   // Shepherdr mode: each space's coordinator, then its tasks (needs you first, merged last), linked to herdr agents by id.
   // A row without a running agent opens read only (view_id shepherdr:<chat key>), showing its Shepherdr chat.
   const TASK_ORDER=['need','ready','work','merging','todo','queued','done'],TASK_LABEL={need:'Needs you',ready:'Ready to merge',merging:'Merging',work:'Working',queued:'Queued',todo:'To do',done:'Done'};
@@ -85,5 +102,5 @@
     const prefix=clean.slice(0,limit-1),space=prefix.lastIndexOf(' ');
     return prefix.slice(0,space>limit/2?space:prefix.length).replace(/[,:;\s]+$/,'')+'…';
   }
-  const api={notificationPreview,sorted,alerts,parse,identity,shepherdrRows};if(typeof module!=='undefined')module.exports=api;else root.HUDModel=api;
+  const api={notificationPreview,sorted,alerts,parse,sessionModel,identity,shepherdrRows};if(typeof module!=='undefined')module.exports=api;else root.HUDModel=api;
 })(globalThis);
