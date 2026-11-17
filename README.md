@@ -503,7 +503,8 @@ dictation continue to work normally.
 
 ### Markdown attachments on macOS
 
-Drop `.md` or `.markdown` files into the HUD, or choose them with **Attach files**.
+Drop `.md` or `.markdown` files into the HUD, copy them in Finder and press
+**Command-V**, or choose them with **Attach files**.
 UTF-8 files up to 16 KB each share the three-file limit with images and videos.
 A filename chip opens a plain-text preview; HTML and links are not executed.
 On Send, the full text is included as quoted attachment content for local Claude,

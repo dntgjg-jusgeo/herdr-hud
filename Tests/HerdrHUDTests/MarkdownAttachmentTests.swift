@@ -9,6 +9,18 @@ final class MarkdownAttachmentTests: XCTestCase {
     func snapshot(_ attachment: Row) -> Row {
         ["version":4,"drafts":[["id":"agent","label":"Agent","text":"","images":[attachment],"uncertain":false,"keyUncertain":false,"queue":[["token":"one","text":"Review","images":[attachment],"status":"pending"]]]]]
     }
+    func testNativeFileImportIsBoundedAndRejectsInvalidFiles() throws {
+        let folder=URL(fileURLWithPath:"/private/tmp").appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:false);defer{try? FileManager.default.removeItem(at:folder)}
+        let file=folder.appendingPathComponent("notes.md"),text="# Café\nKeep exact text"
+        try Data(text.utf8).write(to:file);let item=try MarkdownAttachment.importFile(file)
+        XCTAssertEqual(item["text"] as? String,text);XCTAssertEqual(item["bytes"] as? Int,text.utf8.count)
+        let link=folder.appendingPathComponent("link.md");try FileManager.default.createSymbolicLink(at:link,withDestinationURL:file)
+        XCTAssertThrowsError(try MarkdownAttachment.importFile(link))
+        try Data([255]).write(to:file);XCTAssertThrowsError(try MarkdownAttachment.importFile(file))
+        try Data(repeating:65,count:16385).write(to:file);XCTAssertThrowsError(try MarkdownAttachment.importFile(file))
+        try Data().write(to:file);XCTAssertEqual(try MarkdownAttachment.importFile(file)["text"] as? String,"")
+    }
     func testRoundTripAndQueueAuthorization() throws {
         let folder=URL(fileURLWithPath:"/private/tmp").appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

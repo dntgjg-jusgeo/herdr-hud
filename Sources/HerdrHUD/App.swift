@@ -383,8 +383,11 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                         let url=try self.videoStore.reference(data["attachment"] as? Row ?? [:])
                         DispatchQueue.main.async {self.videoPreview?.stop();let preview=VideoPreview(url:url,name:(data["attachment"] as? Row)?["name"] as? String ?? "Video preview");self.videoPreview=preview;preview.window?.level=NSWindow.Level(rawValue:self.panel.level.rawValue+1);preview.showWindow(nil);preview.window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
                     } else if operation == "videoImport" {
-                        guard let offer=offer,offer.1==id,Date().timeIntervalSince(offer.2)<60,offer.0.count<=3 else{throw HUDError("Video drop expired. Drop or paste the files again.")}
-                        result["attachments"]=try offer.0.map{try self.videoStore.importFile($0)}
+                        guard let offer=offer,offer.1==id,Date().timeIntervalSince(offer.2)<60,offer.0.count<=3 else{throw HUDError("File drop expired. Drop or paste the files again.")}
+                        result["attachments"]=try offer.0.map{url in
+                            if ["md","markdown"].contains(url.pathExtension.lowercased()) {return try MarkdownAttachment.importFile(url)}
+                            return try self.videoStore.importFile(url)
+                        }
                     } else if operation == "videoBegin" {
                         guard let name=data["name"] as? String,let bytes=data["bytes"] as? Int else{throw HUDError("Invalid video attachment.")}
                         let token=try self.videoStore.begin(name:name,bytes:bytes);self.videoImports[token]=id;result["token"]=token

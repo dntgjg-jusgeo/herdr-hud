@@ -580,3 +580,8 @@ before existing checked transport; Markdown-only sends require no image capabili
 Snapshot v4 is written only when Markdown exists, reads v1–v4, counts contents
 against the total text budget and compares exact queued attachment payloads.
 No new cache, network service or model test prompt is needed.
+
+Finder copy/paste now recognizes real .md/.markdown file URLs (including mixed
+MP4+Markdown selections) through the existing native offer handshake. Plain pasted
+path strings remain ordinary text. Native reads reject symlinks/nonregular files,
+invalid UTF-8, changed content and >16KiB before the draft receives the attachment.

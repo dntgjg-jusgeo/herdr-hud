@@ -6,7 +6,7 @@ final class VideoWebView: WKWebView {
     var videoFiles: (([URL]) -> Void)?
     static func urls(_ pasteboard:NSPasteboard) -> [URL] {
         let urls=(pasteboard.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL]) ?? []
-        return !urls.isEmpty && urls.allSatisfy { $0.isFileURL && $0.pathExtension.lowercased() == "mp4" } ? urls : []
+        return !urls.isEmpty && urls.allSatisfy { $0.isFileURL && ["mp4","md","markdown"].contains($0.pathExtension.lowercased()) } ? urls : []
     }
     func pasteVideos() -> Bool {
         let urls=Self.urls(.general);guard !urls.isEmpty else{return false};videoFiles?(urls);return true

@@ -99,3 +99,10 @@ test('Markdown rejects oversized and non-UTF8 files without staging',async()=>{
  h.context.bad={name:'bad.md',size:1,arrayBuffer:async()=>new Uint8Array([255]).buffer};await h.eval('stageMarkdown([bad])');
  assert.equal(h.eval("imagesFor('A').length"),0);assert.equal(h.eval("attachmentLoads.get('A')"),0);
 });
+test('native Finder Markdown paste offer creates the same previewable attachment',async()=>{
+ const h=harness();h.eval("supportsVideos=true;supportsMarkdown=true;stageVideoOffer({id:'A',offer:'fixture',count:1})");
+ const request=h.messages.find(x=>x.op==='videoImport');assert.ok(request);
+ h.context.window.receive({type:'videoImport',data:{requestID:request.requestID,id:'A',ok:true,attachments:[{kind:'markdown',name:'notes.md',text:'# Pasted',bytes:8}]}});await tick();
+ assert.equal(h.eval("imagesFor('A')[0].kind"),'markdown');assert.equal(h.eval("imagesFor('A')[0].text"),'# Pasted');assert.equal(h.$('prompt').value,'');assert.equal(h.eval("attachmentLoads.get('A')"),0);
+ assert.equal(h.messages.some(x=>x.op==='prompt'),false);
+});
