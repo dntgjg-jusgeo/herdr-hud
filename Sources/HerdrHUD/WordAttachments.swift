@@ -6,8 +6,8 @@ import CryptoKit
 /// Private immutable copies. Call on the serial attachment queue; finalized
 /// assets remain available to acknowledged and uncertain agent submissions.
 final class WordAttachments {
-    static let maximumBytes = 10 * 1024 * 1024
-    static let maximumCacheBytes = 256 * 1024 * 1024
+    static let maximumBytes = 100 * 1024 * 1024
+    static let maximumCacheBytes = 512 * 1024 * 1024
     static let maximumAssets = 128
     let directory:URL
     init(directory:URL? = nil) {
@@ -63,17 +63,17 @@ final class WordAttachments {
     private static func unchanged(_ a:stat,_ b:stat)->Bool {
         a.st_dev==b.st_dev && a.st_ino==b.st_ino && a.st_size==b.st_size && a.st_mtimespec.tv_sec==b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec==b.st_mtimespec.tv_nsec && a.st_ctimespec.tv_sec==b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec==b.st_ctimespec.tv_nsec
     }
-    func importFile(_ url:URL)throws->Row {
-        guard url.isFileURL,url.host == nil || url.host == "" || url.host == "localhost",url.pathExtension.lowercased()=="docx" else{throw Self.failure("Choose a local Word file up to 10 MB.")}
+    func importFile(_ url:URL,name:String? = nil)throws->Row {
+        guard url.isFileURL,url.host == nil || url.host == "" || url.host == "localhost",url.pathExtension.lowercased()=="docx" else{throw Self.failure("Choose a local Word file up to 100 MiB.")}
         let fd=open(url.path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);guard fd>=0 else{throw Self.failure("Cannot open this local Word. Attach a readable regular file.")};defer{close(fd)}
-        var before=stat();guard fstat(fd,&before)==0,before.st_mode&S_IFMT == S_IFREG,before.st_size>0,before.st_size<=Self.maximumBytes else{throw Self.failure("Attach a regular Word file up to 10 MB.")}
+        var before=stat();guard fstat(fd,&before)==0,before.st_mode&S_IFMT == S_IFREG,before.st_size>0,before.st_size<=Self.maximumBytes else{throw Self.failure("Attach a regular Word file up to 100 MiB.")}
         let data=try Self.readBounded(fd,maximum:Self.maximumBytes)
         var after=stat(),named=stat()
         guard fstat(fd,&after)==0,lstat(url.path,&named)==0,named.st_mode&S_IFMT == S_IFREG,Self.unchanged(before,after),Self.unchanged(before,named),data.count==before.st_size else{throw Self.failure("The Word changed during import. Attach it again.")}
-        return try store(name:url.lastPathComponent,data:data)
+        return try store(name:name ?? url.lastPathComponent,data:data)
     }
     func importData(name:String,dataBase64:String)throws->Row {
-        guard dataBase64.utf8.count<=((Self.maximumBytes+2)/3)*4,let data=Data(base64Encoded:dataBase64),!data.isEmpty,data.count<=Self.maximumBytes else{throw Self.failure("Attach a Word up to 10 MB.")}
+        guard dataBase64.utf8.count<=((Self.maximumBytes+2)/3)*4,let data=Data(base64Encoded:dataBase64),!data.isEmpty,data.count<=Self.maximumBytes else{throw Self.failure("Attach a Word up to 100 MiB.")}
         return try store(name:name,data:data)
     }
     private func writeFile(_ dir:Int32,name:String,data:Data)throws {
@@ -89,7 +89,7 @@ final class WordAttachments {
         let current=try usage(dir)
         var record=row;record["sha256"]=SHA256.hash(data:data).map{String(format:"%02x",$0)}.joined()
         let metadata=try JSONSerialization.data(withJSONObject:record,options:[.sortedKeys])
-        guard current.assets<Self.maximumAssets,current.bytes+data.count+metadata.count<=Self.maximumCacheBytes else{throw Self.failure("Word cache totals 256 MB or 128 Word documents. Existing Word documents have been retained.")}
+        guard current.assets<Self.maximumAssets,current.bytes+data.count+metadata.count<=Self.maximumCacheBytes else{throw Self.failure("Word cache totals 512 MiB or 128 Word documents. Existing Word documents have been retained.")}
         let part=token+".part.docx",metaPart=token+".metadata.part"
         defer{_ = unlinkat(dir,part,0);_ = unlinkat(dir,metaPart,0)}
         try writeFile(dir,name:part,data:data);try writeFile(dir,name:metaPart,data:metadata)

@@ -71,7 +71,7 @@ test('PDF references use v5 and reject changed metadata and malformed bounds',()
  const v={version:5,drafts:[row({images:[pdf]})]},restored=D.restore(v);
  assert.equal(D.snapshot(restored).version,5);assert.deepEqual(D.snapshot(restored).drafts[0].images,[pdf]);
  assert.throws(()=>D.restore({...v,version:4}));
- for(const patch of [{pages:0},{pages:201},{bytes:10485761},{token:'../file'},{name:'../guide.pdf'}])assert.throws(()=>D.restore({version:5,drafts:[row({images:[{...pdf,...patch}]})]}));
+ for(const patch of [{pages:0},{pages:201},{bytes:104857601},{token:'../file'},{name:'../guide.pdf'}])assert.throws(()=>D.restore({version:5,drafts:[row({images:[{...pdf,...patch}]})]}));
  assert.throws(()=>D.restore({version:5,drafts:[row({images:[pdf,{...pdf,pages:3}]})]}));
 });
 test('Word v6 references survive restart with PDF and validate exact metadata',()=>{
@@ -79,6 +79,20 @@ test('Word v6 references survive restart with PDF and validate exact metadata',(
  const pdf={kind:'pdf',token:'01234567-89ab-cdef-0123-456789abcdef',name:'guide.pdf',bytes:100,pages:2};
  const v={version:6,drafts:[row({images:[word,pdf]})]},restored=D.restore(v);
  assert.equal(D.snapshot(restored).version,6);assert.deepEqual(D.snapshot(restored).drafts[0].images,[word,pdf]);assert.throws(()=>D.restore({...v,version:5}));
- for(const patch of [{bytes:0},{bytes:10485761},{token:'../file'},{name:'../report.docx'},{name:'.docx'},{name:'report.docm'}])assert.throws(()=>D.restore({version:6,drafts:[row({images:[{...word,...patch}]})]}));
+ for(const patch of [{bytes:0},{bytes:104857601},{token:'../file'},{name:'../report.docx'},{name:'.docx'},{name:'report.docm'}])assert.throws(()=>D.restore({version:6,drafts:[row({images:[{...word,...patch}]})]}));
  assert.throws(()=>D.restore({version:6,drafts:[row({images:[word,{...word,bytes:101}]})]}));
+});
+
+test('v7 large file refs preserve opaque originals, deduplicate cache totals, and reject changes',()=>{
+ const md={kind:'markdown',token:'01234567-89ab-cdef-0123-456789abcdef',name:'large.md',bytes:10485760};
+ const image={kind:'raster',token:'11234567-89ab-cdef-0123-456789abcdef',name:'large.png',bytes:104857600,poster:'data:image/jpeg;base64,/9j/2Q=='};
+ const v={version:7,drafts:[row({images:[md,image],queue:[{token:'q',text:'Review',images:[md,image],status:'pending'}]})]};
+ const restored=D.restore(v),snapshot=D.snapshot(restored);assert.equal(snapshot.version,7);assert.deepEqual(snapshot.drafts[0].images,[md,image]);assert.equal(restored.attachments.get('exact identity')?.[1]?.url,image.poster);
+ assert.throws(()=>D.restore({...v,version:6}));
+ for(const patch of [{bytes:10485761},{token:'../file'},{name:'../large.md'},{name:'large.txt'}])assert.throws(()=>D.restore({version:7,drafts:[row({images:[{...md,...patch}]})]}));
+ assert.throws(()=>D.restore({version:7,drafts:[row({images:[md,{...md,bytes:2}]})]}));
+ assert.throws(()=>D.restore({version:7,drafts:[row({images:[{...image,bytes:104857601}]})]}));
+ // Three100MiB originals fit per prompt; totals across unique tokens stay bounded.
+ const images=Array.from({length:6},(_,i)=>({...image,token:`${i}1234567-89ab-cdef-0123-456789abcdef`}));
+ assert.throws(()=>D.restore({version:7,drafts:[row({id:'one',images:images.slice(0,3)}),row({id:'two',images:images.slice(3)})]}));
 });

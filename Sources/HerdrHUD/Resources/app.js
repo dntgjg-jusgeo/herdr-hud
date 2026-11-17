@@ -7,6 +7,7 @@ let agents=[],selected='',opened=false,mode='chat',filter='',reading=false,sendi
 let orcaSupported=false,orcaOpen=false,orcaStandalone=false,orcaModels=[],orcaCatalogRequest='',orcaLaunchRequest='',orcaChosen='',orcaBusy=false;
 let supportsPDF=false;
 let supportsWord=false;
+let supportsNativeFiles=false;
 let supportsMarkdown=false;
 let supportsVideos=false,videoRequests=new Map();
 let supportsAttachments=false,attachments=new Map(),attachmentLoads=new Map(),attachmentSequence=0,pendingAttachmentBytes=0;
@@ -227,6 +228,7 @@ function closeAttachmentPreview(restore=true){
   if(restore)(attachmentButtons.get(key)||$('attach')).focus();
 }
 function openAttachmentPreview(item){
+  if(item.kind==='raster'||(item.kind==='markdown'&&item.token)){request('openFile',{id:selected,attachment:window.HUDDrafts.serializeAttachment(item)});return;}
   if(['video','pdf','word'].includes(item.kind)){request(item.kind==='word'?'openWord':item.kind==='pdf'?'openPDF':'openVideo',{id:selected,attachment:window.HUDDrafts.serializeAttachment(item)});return;}
   attachmentPreview={key:item.key,id:selected};$('attachment-preview-name').textContent=item.name;
   $('attachment-preview-image').hidden=item.kind==='markdown';$('attachment-preview-text').hidden=item.kind!=='markdown';$('attachment-preview-text').textContent=item.kind==='markdown'?item.text:'';
@@ -242,7 +244,7 @@ function renderAttachments(){
   if(!items.length){$('attachments').replaceChildren?.();return;}
   $('attachments').replaceChildren(...items.map(item=>{
     const chip=el('div',undefined,'attachment'),image=el('img'),preview=el('button',undefined,'attachment-thumbnail');image.src=item.url;image.alt='';
-    preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);if(['markdown','pdf','word'].includes(item.kind))preview.append(el('span',item.kind==='word'?'DOCX':item.kind==='pdf'?'PDF':'MD'));else preview.append(image);if(item.kind==='video')preview.append(el('span','▶','video-play'));preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
+    preview.type='button';preview.setAttribute('aria-label','Preview '+item.name);if(['markdown','pdf','word'].includes(item.kind))preview.append(el('span',item.kind==='raster'?'IMG':item.kind==='word'?'DOCX':item.kind==='pdf'?'PDF':'MD'));else preview.append(image);if(item.kind==='video')preview.append(el('span','▶','video-play'));preview.onclick=()=>openAttachmentPreview(item);attachmentButtons.set(item.key,preview);
     const remove=el('button','×');remove.setAttribute('aria-label','Remove '+item.name);remove.disabled=sending||queueSaving||uncertain.has(selected);
     remove.onclick=()=>{attachments.set(selected,imagesFor(selected).filter(x=>x.key!==item.key));draftChanged();renderHeader();};
     chip.append(preview,el('span',item.name+(item.kind==='video'?' · MP4':item.kind==='markdown'?' · Markdown':item.kind==='pdf'?` · ${item.pages} pages`:item.kind==='word'?' · Word':'')),remove);return chip;
@@ -265,7 +267,7 @@ async function stageVideoOffer(data){
 }
 async function stageVideos(files){
   if(!files.length||!canStageVideos(files.length))return;const id=selected;
-  if(files.some(f=>!f.size||f.size>100*1024*1024)){notice('MP4 videos must be under 100 MB each.');return;}
+  if(files.some(f=>!f.size||f.size>50*1024*1024)){notice('MP4 videos must be up to 50 MiB each.');return;}
   attachmentLoads.set(id,(attachmentLoads.get(id)||0)+files.length);renderHeader();
   for(const file of files){let token='';try{
     token=(await videoRequest('videoBegin',{id,name:file.name,bytes:file.size})).token;
@@ -283,40 +285,33 @@ function stageFiles(files){
   if(imagesFor(selected).length+(attachmentLoads.get(selected)||0)+list.length>3){notice('Attach up to three files.');return;}
   if(images.length)stageImages(images);if(videos.length)stageVideos(videos);if(markdown.length)stageMarkdown(markdown);if(pdfs.length)stagePDFs(pdfs);if(words.length)stageWords(words);
 }
-async function stagePDFs(files){
-  if(!supportsPDF||!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('PDF attachments require a local Claude, Codex or managed OpenCode chat.');return;}
-  const id=selected;if(imagesFor(id).length+(attachmentLoads.get(id)||0)+files.length>3||files.some(f=>!f.size||f.size>10485760)){notice('Attach up to three files; PDFs can be up to 10 MB each.');return;}
-  attachmentLoads.set(id,(attachmentLoads.get(id)||0)+files.length);renderHeader();
-  for(const file of files){try{
-    const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('Could not read PDF.'));reader.readAsDataURL(file);});
-    const result=await videoRequest('pdfImport',{id,name:file.name,data});acceptVideo(id,result.attachment);
-  }catch(error){notice(error.message||'Could not attach PDF.');}
+async function stageNativeFiles(files,{supported=true,maximum=100*1024*1024,label='Files'}={}){
+  if(!supported||!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice(label+' require a local Claude, Codex or managed OpenCode chat.');return;}
+  const id=selected,list=Array.from(files);
+  if(!list.length)return;
+  if(imagesFor(id).length+(attachmentLoads.get(id)||0)+list.length>3||list.some(f=>!f.size||f.size>maximum)){notice(`Attach up to three files; ${label} can be up to ${maximum/1024/1024} MiB each.`);return;}
+  attachmentLoads.set(id,(attachmentLoads.get(id)||0)+list.length);renderHeader();
+  for(const file of list){let token='';try{
+    token=(await videoRequest('fileBegin',{id,name:file.name,bytes:file.size})).token;
+    for(let offset=0;offset<file.size;offset+=1024*1024){
+      const chunk=file.slice(offset,Math.min(file.size,offset+1024*1024));
+      const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('Could not read attachment.'));reader.readAsDataURL(chunk);});
+      await videoRequest('fileChunk',{id,token,offset,data});
+    }
+    const result=await videoRequest('fileFinish',{id,token});acceptVideo(id,result.attachment);
+  }catch(error){if(token)request('fileCancel',{id,token});notice(error.message||'Could not import attachment.');}
   finally{attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}}
 }
-async function stageWords(files){
-  if(!supportsWord||!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Word attachments require a local Claude, Codex or managed OpenCode chat.');return;}
-  const id=selected;if(imagesFor(id).length+(attachmentLoads.get(id)||0)+files.length>3||files.some(f=>!f.size||f.size>10485760)){notice('Attach up to three files; Words can be up to 10 MB each.');return;}
-  attachmentLoads.set(id,(attachmentLoads.get(id)||0)+files.length);renderHeader();
-  for(const file of files){try{
-    const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(new Error('Could not read Word.'));reader.readAsDataURL(file);});
-    const result=await videoRequest('wordImport',{id,name:file.name,data});acceptVideo(id,result.attachment);
-  }catch(error){notice(error.message||'Could not attach Word.');}
-  finally{attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}}
+function stagePDFs(files){return stageNativeFiles(files,{supported:supportsPDF,label:'PDFs'});}
+function stageWords(files){return stageNativeFiles(files,{supported:supportsWord,label:'Word files'});}
+function stageMarkdown(files){return stageNativeFiles(files,{supported:supportsMarkdown,maximum:10*1024*1024,label:'UTF-8 Markdown files'});}
+function stageImages(files){
+  if(!supportsNativeFiles)return stageLegacyImages(files);
+  const list=Array.from(files);
+  if(list.some(f=>!['image/png','image/jpeg','image/webp','image/gif'].includes(f.type))){notice('Use PNG, JPEG, WebP or GIF images.');return;}
+  return stageNativeFiles(list,{label:'Raster images'});
 }
-async function stageMarkdown(files){
-  if(!supportsMarkdown||!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Markdown attachments require a local Claude, Codex or managed OpenCode chat.');return;}
-  const id=selected;
-  if(imagesFor(id).length+(attachmentLoads.get(id)||0)+files.length>3||files.some(f=>f.size>16384)){notice('Attach up to three files; Markdown files can be up to 16 KB each.');return;}
-  attachmentLoads.set(id,(attachmentLoads.get(id)||0)+files.length);renderHeader();
-  for(const file of files){try{
-    const buffer=await file.arrayBuffer();if(buffer.byteLength>16384)throw new Error('Markdown files can be up to 16 KB each.');
-    const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(buffer),item={kind:'markdown',name:file.name,text,bytes:new TextEncoder().encode(text).length};
-    const next=new Map(attachments);next.set(id,[...imagesFor(id),{...item,key:++attachmentSequence}]);
-    window.HUDDrafts.snapshot({...draftState(),attachments:next});attachments=next;draftChanged();
-  }catch(error){notice(error.message||'Use a UTF-8 Markdown file up to 16 KB.');}
-  finally{attachmentLoads.set(id,Math.max(0,(attachmentLoads.get(id)||0)-1));renderHeader();}}
-}
-async function stageImages(files){
+async function stageLegacyImages(files){
   if(!draftsLoaded||!canAttach()||sending||queueSaving||uncertain.has(selected)){notice('Images are available for local Claude, Codex, and managed OpenCode chats.');return;}
   const id=selected,list=Array.from(files),count=imagesFor(id).length+(attachmentLoads.get(id)||0);
   const stagedBytes=[...attachments.values(),...[...queues.values()].flat().map(item=>item.images)].flat().reduce((n,item)=>n+(['video','markdown','pdf','word'].includes(item.kind)?0:item.bytes),0)+pendingAttachmentBytes;
@@ -421,12 +416,12 @@ function send(){
 function sendPrompt(id,message,images,options={}){
   if(handoffSaving)return;
   sending=true;notice('');if(!options.operation)queueHolds.set(id,'await-working');pendingDraftPrompt.add(id);renderHeader();
-  beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>['video','markdown','pdf','word'].includes(x.kind)?window.HUDDrafts.serializeAttachment(x):({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
+  beforeMutation(()=>{const operation=options.operation||(options.queueToken?'queuedPrompt':'prompt');const requestID=request(operation,{id,message,attachments:images.map(x=>['raster','video','markdown','pdf','word'].includes(x.kind)?window.HUDDrafts.serializeAttachment(x):({data:x.data})),...(options.expectedTurnId?{expectedTurnId:options.expectedTurnId}:{}),...(options.queueToken?{queueToken:options.queueToken}:{})});promptByRequest.set(requestID,{id,message,images,operation,queueToken:options.queueToken});pendingDraftPrompt.delete(id);},()=>{pendingDraftPrompt.delete(id);sending=false;if(options.queueToken){window.HUDFollowups.settle(queues,id,options.queueToken,false);queuePaused.add(id);}renderHeader();});
 }
 window.receive=({type,data})=>{
   if(type==='videoOffer'){stageVideoOffer(data);return;}
-  if(['videoBegin','videoChunk','videoFinish','videoImport','pdfImport','wordImport'].includes(type)){const pending=videoRequests.get(data.requestID);if(!pending)return;videoRequests.delete(data.requestID);clearTimeout(pending.timer);if(data.error)pending.reject(new Error(data.error));else pending.resolve(data);return;}
-  if(type==='openVideo'||type==='openPDF'||type==='openWord'||type==='videoCancel'){if(data.error)notice(data.error);return;}
+  if(['fileBegin','fileChunk','fileFinish','videoBegin','videoChunk','videoFinish','videoImport','pdfImport','wordImport'].includes(type)){const pending=videoRequests.get(data.requestID);if(!pending)return;videoRequests.delete(data.requestID);clearTimeout(pending.timer);if(data.error)pending.reject(new Error(data.error));else pending.resolve(data);return;}
+  if(type==='openFile'||type==='fileCancel'||type==='openVideo'||type==='openPDF'||type==='openWord'||type==='videoCancel'){if(data.error)notice(data.error);return;}
 
   if(type==='openOrcaModels'){const target=agents.find(a=>a.agent==='opencode'&&a.orca_managed===true);select(target?.id||'');orcaStandalone=!target;orcaOpen=true;renderOrcaPicker();loadOrcaModels();}else if(type==='orcaModels'){
     if(data.requestID!==orcaCatalogRequest)return;orcaCatalogRequest='';
@@ -476,7 +471,7 @@ window.receive=({type,data})=>{
   else if(type==='nativeApprovalResponse'){const pending=nativeApprovalRequests.get(data.requestID);if(!pending)return;nativeApprovalRequests.delete(data.requestID);nativeApprovalsBusy.delete(pending.token);if(data.error)notice(data.error);renderNativeApprovals();}
   else if(type==='newCodexProgress'){$('new-codex-status').textContent=data.message||'Complete startup in Herdr.';}
   else if(type==='newCodexSession'){newCodexBusy=false;$('new-codex-start').disabled=false;$('new-codex-cancel').disabled=false;if(data.error){$('new-codex-status').textContent=data.error;}else if(data.cancelled){$('new-codex-status').textContent='Choose its project folder to start.';}else{$('new-codex-dialog').close();request('refresh');if(data.id)select(data.id);}}
-  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsAttachments=!!data.attachmentsSupported;supportsVideos=!!data.videoAttachmentsSupported;supportsMarkdown=!!data.markdownAttachmentsSupported;supportsPDF=!!data.pdfAttachmentsSupported;supportsWord=!!data.wordAttachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsNativeFiles=!!data.nativeFileAttachmentsSupported;supportsAttachments=!!data.attachmentsSupported;supportsVideos=!!data.videoAttachmentsSupported;supportsMarkdown=!!data.markdownAttachmentsSupported;supportsPDF=!!data.pdfAttachmentsSupported;supportsWord=!!data.wordAttachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
   else if(type==='quickPrompts'){quickPrompts=data.prompts;renderQuickPrompts();}
   else if(type==='loadDrafts'){restoreDrafts(data);}
   else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}

@@ -87,3 +87,9 @@ test('briefing includes native project folder and detects directory changes',()=
  assert.throws(()=>H.assertPair({...a,preview_directory:'/other'},b,H.identity(a),H.identity(b)),/changed/);
  const h=harness();h.$('handoff-brief').scrollTop=400;h.$('handoff-open').click();assert.equal(h.$('handoff-brief').scrollTop,0);h.run('draftPersistence.stop()');
 });
+
+test('handoff copies v7 private references intact and deduplicates shared originals',()=>{
+ const state=empty(),files=[{kind:'markdown',token:'01234567-89ab-cdef-0123-456789abcdef',name:'large.md',bytes:10485760},{kind:'raster',token:'11234567-89ab-cdef-0123-456789abcdef',name:'large.png',bytes:104857600}];
+ state.attachments.set('A',files);const next=H.candidate(state,'B','Read full originals',files,D);const again=H.candidate(next,'B','Follow up',files,D);
+ assert.equal(D.snapshot(again).version,7);assert.deepEqual(again.attachments.get('B'),files);assert.deepEqual(state.attachments.get('A'),files);assert.equal(state.attachments.has('B'),false);
+});

@@ -651,3 +651,39 @@ send or copy queues/approvals. Draft persistence and aggregate attachment limits
 remain authoritative. Session/online/readiness-for-staging checks run again before
 mutation, with pending/uncertain operations blocked. No live agent prompt is
 required for verification; stage a synthetic draft and remove only that test draft.
+
+
+## Larger private attachments — November 17, 2026
+
+New Markdown (10 MiB) and raster originals (100 MiB/250 million pixels) use
+FileAttachments opaque immutable references in snapshot v7. Full originals keep
+their real extension, hash checks, private modes, no-follow file/directory opens,
+exact queued authorization and shared-reference deduplication. Native read-only
+Quick Look previews preserve originals. Raster thumbnail JPEGs are bounded to
+200 pixels/50K characters and share the existing 2 MiB poster budget. Legacy
+inline Markdown/images and snapshot versions1–6 remain readable.
+
+On preparation, Markdown contributes a bounded quoted preview and explicit full
+original local path/read instruction. No content is truncated in the cached file.
+Images contribute a normalized first-frame JPEG <=2000 pixels/4 MiB plus the full
+original path and fidelity disclosure. This serves local Claude, Codex and managed
+OpenCode through their existing transport; no live agent receives a test prompt.
+
+Browser Markdown/images/PDF/DOCX stream 1 MiB bridge chunks with exact session
+ownership, offsets, declared lengths, bounded pending reservations and cancel on
+failure. Finder/picker imports stay native. Crash-left uploads expire after an
+hour; active uploads after five minutes. Completed files are retained. Image/MD,
+PDF and DOCX caches each have a 512 MiB/128-original quota. New PDF/DOCX original
+size limits are100MiB; PDF200page and DOCX512entry/8MiBentry/32MiBexpanded/2MiBtext
+analysis bounds are retained and fail explicitly. The finite limits protect the
+Mac mini and provider request bounds. New videos are50MiB; persisted valid video
+references retain the legacy100MiB ceiling.
+
+Verification: `node --test Tests/*.test.cjs` passed113tests. Native large-attachment
+coverage includes real22KiB/10MiB UTF-8 originals with tail markers beyond the
+excerpt, strict malformed/oversize checks, private-copy survival/hash tampering,
+chunk order/cancel behavior, a >4MiB real PNG normalized within provider bounds,
+legacy/new draft queue identity, new50MiB video imports and legacy100MiB references.
+`swift test -j 1 --disable-sandbox` with private tmp cache/scratch paths passed
+160 tests, 2 skipped, 0 failures; controlled subprocess/socket fixtures required
+the authorized unsandboxed test run. Installation acceptance is recorded by the lead.

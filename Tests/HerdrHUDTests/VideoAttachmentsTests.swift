@@ -49,7 +49,7 @@ final class VideoAttachmentsTests:XCTestCase {
         let root=folder();defer{try? FileManager.default.removeItem(at:root)}
         let store=VideoAttachments(directory:root,inspect:{_ in self.metadata()})
         var tokens:[String]=[]
-        for _ in 0..<3{tokens.append(try store.begin(name:"large.mp4",bytes:VideoAttachments.maximumBytes))}
+        for _ in 0..<3{tokens.append(try store.begin(name:"large.mp4",bytes:VideoAttachments.maximumImportBytes))}
         XCTAssertThrowsError(try store.begin(name:"fourth.mp4",bytes:24))
         for token in tokens{store.cancel(token:token)}
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath:root.path).isEmpty)
@@ -72,8 +72,8 @@ final class VideoAttachmentsTests:XCTestCase {
         _=VideoAttachments(directory:root,inspect:{_ in self.metadata()})
         XCTAssertFalse(FileManager.default.fileExists(atPath:stale.path));XCTAssertNoThrow(try store.reference(row))
         let fill=root.appendingPathComponent("unreferenced.mp4"),fd=open(fill.path,O_WRONLY|O_CREAT|O_EXCL,0o600)
-        XCTAssertGreaterThanOrEqual(fd,0);XCTAssertEqual(ftruncate(fd,off_t(450*1024*1024)),0);close(fd)
-        XCTAssertThrowsError(try store.begin(name:"over-quota.mp4",bytes:VideoAttachments.maximumBytes))
+        XCTAssertGreaterThanOrEqual(fd,0);XCTAssertEqual(ftruncate(fd,off_t(470*1024*1024)),0);close(fd)
+        XCTAssertThrowsError(try store.begin(name:"over-quota.mp4",bytes:VideoAttachments.maximumImportBytes))
     }
     func testFakeMP4ContainerIsRejectedByNativeVideoValidation()throws {
         let root=folder();defer{try? FileManager.default.removeItem(at:root)}

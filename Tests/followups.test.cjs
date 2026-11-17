@@ -70,3 +70,9 @@ test('Word queue roundtrip binds document bytes and token exactly',()=>{
  Q.enqueue(queues,'codex',{token:'word-q',text:'Review',images:[word]});const saved=D.snapshot(state(queues));assert.equal(saved.version,6);assert.equal(D.restore(saved).queues.get('codex')[0].images[0].name,'report.docx');
  const current=state(new Map([['codex',[{token:'word-q',text:'Review',images:[{...word,bytes:101}],status:'queued'}]]]));assert.throws(()=>D.mergeRestored(saved,current));
 });
+
+test('large Markdown and original image refs retain v7 identity through enqueue and recovery',()=>{
+ const files=[{kind:'markdown',token:'01234567-89ab-cdef-0123-456789abcdef',name:'large.md',bytes:10485760},{kind:'raster',token:'11234567-89ab-cdef-0123-456789abcdef',name:'large.png',bytes:104857600}],queues=new Map();
+ Q.enqueue(queues,'codex',{token:'large-q',text:'Review',images:files});const snapshot=D.snapshot(state(queues));assert.equal(snapshot.version,7);assert.deepEqual(D.restore(snapshot).queues.get('codex')[0].images.map(D.serializeAttachment),files);
+ Q.begin(queues,'codex','large-q');Q.settle(queues,'codex','large-q',false);assert.throws(()=>Q.begin(queues,'codex','large-q'));
+});

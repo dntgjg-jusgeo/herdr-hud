@@ -10,7 +10,8 @@ import ImageIO
 /// are retained: an acknowledged agent may still need their local paths later.
 /// All methods belong to the caller's serial attachment queue.
 final class VideoAttachments {
-    static let maximumBytes = 100 * 1024 * 1024
+    static let maximumBytes = 100 * 1024 * 1024 // persisted legacy references
+    static let maximumImportBytes = 50 * 1024 * 1024
     static let maximumChunkBytes = 1024 * 1024
     static let maximumCacheBytes = 512 * 1024 * 1024
     static let maximumAssets = 128
@@ -75,8 +76,8 @@ final class VideoAttachments {
     }
     func begin(name:String,bytes:Int)throws->String {
         try cleanupIncomplete()
-        guard bytes>0,bytes<=Self.maximumBytes,pending.count<3,!name.isEmpty,name.utf8.count<=480,name.lowercased().hasSuffix(".mp4"),
-              !name.contains("/"),!name.contains("\\"),name.rangeOfCharacter(from:.controlCharacters)==nil else{throw Self.failure("Attach an MP4 up to 100 MB, with at most three imports at once.")}
+        guard bytes>0,bytes<=Self.maximumImportBytes,pending.count<3,!name.isEmpty,name.utf8.count<=480,name.lowercased().hasSuffix(".mp4"),
+              !name.contains("/"),!name.contains("\\"),name.rangeOfCharacter(from:.controlCharacters)==nil else{throw Self.failure("Attach an MP4 up to 50 MiB, with at most three imports at once.")}
         let dir=try folder();defer{close(dir)}
         let reserved=pending.values.reduce(0){$0+$1.bytes-$1.offset+350000}
         let current=try usage(dir)
@@ -118,7 +119,7 @@ final class VideoAttachments {
     func importFile(_ url:URL)throws->Row {
         guard url.isFileURL,url.host == nil || url.host == "" || url.host == "localhost",url.pathExtension.lowercased()=="mp4" else{throw Self.failure("Choose a local MP4 file.")}
         let fd=open(url.path,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);guard fd>=0 else{throw Self.failure("Cannot open this local MP4.")};defer{close(fd)}
-        var before=stat();guard fstat(fd,&before)==0,(before.st_mode&S_IFMT)==S_IFREG,before.st_size>0,before.st_size<=Self.maximumBytes else{throw Self.failure("Use a regular MP4 file up to 100 MB.")}
+        var before=stat();guard fstat(fd,&before)==0,(before.st_mode&S_IFMT)==S_IFREG,before.st_size>0,before.st_size<=Self.maximumImportBytes else{throw Self.failure("Use a regular MP4 file up to 50 MiB.")}
         let token=try begin(name:url.lastPathComponent,bytes:Int(before.st_size))
         do {
             var buffer=[UInt8](repeating:0,count:Self.maximumChunkBytes),offset=0

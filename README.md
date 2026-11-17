@@ -151,7 +151,7 @@ they do not steer it mid-task.
 
 Drop MP4 files into the HUD, copy an MP4 in Finder and paste with Command-V,
 or use **Attach files**. Up to three images/videos can be attached together;
-MP4s may be up to 100 MB each. A thumbnail with a play badge appears in the
+New MP4 imports may be up to 50 MiB each. Existing valid saved videos up to the previous 100 MiB limit remain readable. A thumbnail with a play badge appears in the
 composer. Click it to open the private copy in the HUD’s video player.
 
 Videos stay with their exact draft or queued prompt, including after restart.
@@ -182,7 +182,7 @@ than silently dropping attachments. Image-only snapshots remain version 2.
 
 ### PDF analysis on macOS
 
-Attach a PDF up to 10 MB/200 pages. On Send, the HUD renders every page locally
+Attach a PDF up to 100 MiB/200 pages. On Send, the HUD renders every page locally
 at up to 2000 pixels on its longest edge and runs Apple Vision OCR, including on
 pages that already have embedded text. Local Claude, Codex and managed OpenCode
 receive one labeled contact sheet per PDF (at most six evenly sampled pages),
@@ -195,7 +195,7 @@ Analysis runs in the background before sending. A checked 180-second analysis
 deadline, 20-second OCR cancellation deadline per page, 2 MB full-text limit, and
 cache capacity failures retain the draft without sending. Native page rendering
 is synchronous, so these checks are not a guaranteed wall-clock timeout. The full
-text is kept privately alongside the PDF within its existing 256 MB cache budget;
+text is kept privately alongside the PDF within its 512 MiB cache budget;
 the prompt includes a 12 KB excerpt and explicitly marks truncation. No OCR engine,
 model download or cloud OCR service is needed. Remote PDF attachments are unsupported.
 
@@ -204,7 +204,7 @@ model download or cloud OCR service is needed. Remote PDF attachments are unsupp
 Drag a `.docx` into the HUD, copy it in Finder and press **Command-V** in the
 composer, or choose it with **Attach files**. Click its DOCX chip to preview the
 original document in a native read-only Quick Look window; Command-W closes it.
-Word files share the three-attachment limit and can be up to 10 MB each.
+Word files share the three-attachment limit and can be up to 100 MiB each.
 Private local copies survive moving the original, draft recovery and queued
 prompts. Drafts containing Word documents use snapshot version 6; earlier
 snapshot formats remain readable.
@@ -221,9 +221,11 @@ than evaluated. External hyperlinks are not fetched.
 
 Encrypted, macro-enabled and externally linked media/template packages are
 unsupported. Archives are checked before preview or sending, with 512 entries,
-8 MB per entry and 32 MB expanded limits. Full extracted text is limited to
+8 MiB per entry and 32 MiB expanded limits. These analysis bounds still apply
+to a large original DOCX, so a package containing an individual image over 8 MiB
+or more than 32 MiB of expanded content must be exported in a smaller form. Full extracted text is limited to
 2 MB; the prompt excerpt to 12 KB. The private Word cache is capped at
-256 MB/128 documents. Errors retain drafts without sending a partial result.
+512 MiB/128 documents. Errors retain drafts without sending a partial result.
 No Word installation or document-conversion service is required. `.doc`, `.docm`
 and remote Word attachments are not supported.
 
@@ -547,21 +549,23 @@ that copy do not change the original. Remote image previews are not supported.
 
 ### Attach local images on macOS
 
-For a local hc Claude or Codex agent, drop PNG, JPEG, WebP or GIF files on the
-HUD or choose **Attach images**. The composer shows removable thumbnails and
-filenames; switching tabs or agents preserves each image draft in memory. Up to
-three images (4 MB each, 40 million pixels each) can accompany a prompt, including
-an image-only prompt. All open image drafts together are limited to 24 MB. Closing
-the app discards these drafts. Replaced agents do not inherit image drafts.
+For local Claude, Codex or managed OpenCode chats, drop PNG, JPEG, WebP or GIF
+files, copy them in Finder and press **Command-V**, or choose **Attach files**.
+Up to three files share a prompt. Original images can be up to **100 MiB** and
+250 million pixels. Thumbnails stay with the exact draft, queue or handoff and
+survive restart. Click a thumbnail for a native read-only preview of the original.
 
-Nothing uploads on drop. **Send prompt** writes the validated image bytes beside
-the selected terminal with hc `terminal.put`, then submits one text prompt asking
-the agent to inspect those files using its image/read tool. This is local file
-access, not native CLI multimodal injection; the agent's tools and permissions
-determine whether it can view them. The backend transcript can show these file
-references; the composer never inserts paths. Upload/send failure retains the
-draft and images and requires inspection in Herdr before another attempt. Uploaded
-files live until hc removes the terminal, including files from interrupted sends.
+The HUD keeps a private checked original and prepares a JPEG overview of its
+first frame, at most 2000 pixels on the longest edge and 4 MiB, for the agent's
+image tools. The prompt also supplies the original local path for full detail.
+Animation, transparency and tiny details may differ in the overview; local tools
+can read the original. Unsupported or failed decoding refuses the attachment.
+The image/Markdown cache is capped at 512 MiB/128 originals; existing files are
+retained because sent or uncertain prompts can still need them.
+
+Browser files stream to the native host in 1 MiB chunks; WebKit never decodes a
+large original image. No agent receives anything until **Send prompt**. Delivery
+uses the existing guarded transport and never retries an uncertain send.
 Remote, legacy Herdr, and Windows attachments are unavailable. Text prompting and
 dictation continue to work normally.
 
@@ -569,18 +573,24 @@ dictation continue to work normally.
 
 Drop `.md` or `.markdown` files into the HUD, copy them in Finder and press
 **Command-V**, or choose them with **Attach files**.
-UTF-8 files up to 16 KB each share the three-file limit with images and videos.
-A filename chip opens a plain-text preview; HTML and links are not executed.
-On Send, the full text is included as quoted attachment content for local Claude,
-Codex or managed OpenCode. A vision model is not needed for Markdown alone.
-Combined oversized prompts are refused without sending or truncating content.
-Markdown attachments survive restart and queued prompts in snapshot version 4;
-older builds refuse these snapshots rather than dropping files.
+UTF-8 files up to **10 MiB** each share the three-file limit. The HUD stores the
+entire original in a private immutable cache and opens a native read-only preview.
+Local Claude, Codex and managed OpenCode receive its full local path plus a bounded
+quoted preview. They can read the entire original with local tools, in chunks as
+needed; no content is removed from the saved file. The prompt explicitly asks for
+that full read and labels the excerpt's coverage. A vision model is not needed.
+
+Large Markdown and new image references use snapshot version 7; older builds
+refuse those snapshots rather than dropping files. Legacy inline Markdown and
+image drafts still load unchanged. Queue and handoff copies preserve the same
+opaque original reference. Invalid UTF-8, NUL characters, unsupported processing
+or cache limits fail explicitly and preserve the draft. Finite limits protect
+local memory and provider payload sizes; files are not unlimited.
 
 ### PDF attachments on macOS
 
 Drop a `.pdf`, copy it in Finder and press **Command-V**, or use **Attach files**.
-PDFs up to10MB/200pages share the three-file limit. Click the filename chip for
+PDFs up to 100 MiB/200 pages share the three-file limit. Click the filename chip for
 a native full-document preview with scrolling and zoom; Command-W closes it.
 Unlock password-protected files before attaching. Private copies survive moving
 the original, draft recovery and queued prompts (snapshot version5).

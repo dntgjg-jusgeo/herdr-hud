@@ -10,7 +10,7 @@ import XCTest
         board.clearContents();board.writeObjects([NSURL(fileURLWithPath:"/tmp/example.mp4")])
         XCTAssertEqual(VideoWebView.urls(board).map(\.lastPathComponent),["example.mp4"])
         board.clearContents();board.writeObjects([NSURL(fileURLWithPath:"/tmp/example.mp4"),NSURL(fileURLWithPath:"/tmp/example.png")])
-        XCTAssertTrue(VideoWebView.urls(board).isEmpty,"Mixed drops remain on the web file import route")
+        XCTAssertEqual(VideoWebView.urls(board).map(\.lastPathComponent),["example.mp4","example.png"],"Mixed supported Finder files use checked native imports")
         board.clearContents();board.writeObjects([NSURL(fileURLWithPath:"/tmp/notes.md"),NSURL(fileURLWithPath:"/tmp/guide.markdown"),NSURL(fileURLWithPath:"/tmp/clip.mp4"),NSURL(fileURLWithPath:"/tmp/guide.pdf"),NSURL(fileURLWithPath:"/tmp/report.docx")])
         XCTAssertEqual(VideoWebView.urls(board).map(\.lastPathComponent),["notes.md","guide.markdown","clip.mp4","guide.pdf","report.docx"])
         board.clearContents();board.setString("/tmp/notes.md",forType:.string)

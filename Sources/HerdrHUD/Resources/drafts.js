@@ -18,37 +18,48 @@
   function serializeAttachment(value){
     if(value?.kind==='word')return {kind:'word',token:value.token,name:value.name,bytes:value.bytes};
     if(value?.kind==='pdf')return {kind:'pdf',token:value.token,name:value.name,bytes:value.bytes,pages:value.pages};
+    if(value?.kind==='raster'||(value?.kind==='markdown'&&value.token!==undefined))return {kind:value.kind,token:value.token,name:value.name,bytes:value.bytes,...(value.poster!==undefined?{poster:value.poster}:{})};
     if(value?.kind==='markdown')return {kind:'markdown',name:value.name,text:value.text,bytes:value.bytes};
     if(value?.kind==='video')return {kind:'video',token:value.token,name:value.name,bytes:value.bytes,poster:value.poster,duration:value.duration,width:value.width,height:value.height};
     return {data:value?.data,name:value?.name};
   }
   function attachment(value,key,version,videoRefs,posterBudget){
+    if(value?.kind==='raster'||(value?.kind==='markdown'&&value.token!==undefined)){
+      const v=serializeAttachment(value),md=v.kind==='markdown';
+      if(version!==7||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\p{Cc}\p{Cf}]/u.test(v.name)||!(md?/^.+[.](md|markdown)$/i:/^.+[.](png|jpg|jpeg|webp|gif)$/i).test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<1||v.bytes>(md?10485760:104857600))fail();
+      if(v.poster!==undefined){if(md||typeof v.poster!=='string'||v.poster.length>50000||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(v.poster))fail();posterBudget.total+=v.poster.length;if(posterBudget.total>limits.totalPosters)fail();}
+      const cacheKey='file:'+v.token,serialized=JSON.stringify(v),prior=videoRefs.get(cacheKey);
+      if(prior&&prior.serialized!==serialized)fail();
+      if(!prior)videoRefs.set(cacheKey,{serialized,bytes:v.bytes,file:true});
+      const files=[...videoRefs.values()].filter(x=>x.file);if(files.length>128||files.reduce((n,x)=>n+x.bytes,0)>536870912)fail();
+      return {...v,key,url:v.poster};
+    }
     if(value?.kind==='word'){
       const v=serializeAttachment(value);
-      if(version!==6||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!/^.+[.]docx$/i.test(v.name)||v.name.length>120||/[\\/\p{Cc}\p{Cf}]/u.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<1||v.bytes>10485760)fail();
+      if(![6,7].includes(version)||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!/^.+[.]docx$/i.test(v.name)||v.name.length>120||/[\\/\p{Cc}\p{Cf}]/u.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<1||v.bytes>104857600)fail();
       const cacheKey='word:'+v.token,serialized=JSON.stringify(v),prior=videoRefs.get(cacheKey);
       if(prior&&prior.serialized!==serialized)fail();
       if(!prior)videoRefs.set(cacheKey,{serialized,bytes:v.bytes,word:true});
-      const docs=[...videoRefs.values()].filter(x=>x.word);if(docs.length>128||docs.reduce((n,x)=>n+x.bytes,0)>268435456)fail();
+      const docs=[...videoRefs.values()].filter(x=>x.word);if(docs.length>128||docs.reduce((n,x)=>n+x.bytes,0)>536870912)fail();
       return {...v,key};
     }
     if(value?.kind==='pdf'){
       const v=serializeAttachment(value);
-      if(![5,6].includes(version)||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!/^.+[.]pdf$/i.test(v.name)||v.name.length>120||/[\\/\p{Cc}\p{Cf}]/u.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<1||v.bytes>10485760||!Number.isSafeInteger(v.pages)||v.pages<1||v.pages>200)fail();
+      if(![5,6,7].includes(version)||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!/^.+[.]pdf$/i.test(v.name)||v.name.length>120||/[\\/\p{Cc}\p{Cf}]/u.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<1||v.bytes>104857600||!Number.isSafeInteger(v.pages)||v.pages<1||v.pages>200)fail();
       const cacheKey='pdf:'+v.token,serialized=JSON.stringify(v),prior=videoRefs.get(cacheKey);
       if(prior&&prior.serialized!==serialized)fail();
       if(!prior)videoRefs.set(cacheKey,{serialized,bytes:v.bytes,pdf:true});
-      const pdfs=[...videoRefs.values()].filter(x=>x.pdf);if(pdfs.length>128||pdfs.reduce((n,x)=>n+x.bytes,0)>268435456)fail();
+      const pdfs=[...videoRefs.values()].filter(x=>x.pdf);if(pdfs.length>128||pdfs.reduce((n,x)=>n+x.bytes,0)>536870912)fail();
       return {...v,key};
     }
     if(value?.kind==='markdown'){
       const v=serializeAttachment(value);
-      if(![4,5,6].includes(version)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/^.+[.](md|markdown)$/i.test(v.name)||/[\p{Cc}\p{Cf}]/u.test(v.name)||typeof v.text!=='string'||v.text.includes('\0')||!Number.isSafeInteger(v.bytes)||v.bytes!==bytes(v.text)||v.bytes>16384)fail();
+      if(![4,5,6,7].includes(version)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/^.+[.](md|markdown)$/i.test(v.name)||/[\p{Cc}\p{Cf}]/u.test(v.name)||typeof v.text!=='string'||v.text.includes('\0')||!Number.isSafeInteger(v.bytes)||v.bytes!==bytes(v.text)||v.bytes>16384)fail();
       return {...v,key};
     }
     if(value?.kind!=='video'){if(value?.kind!==undefined&&value.kind!=='image')fail();return image(value,key);}
     const v=serializeAttachment(value),prefix='data:image/jpeg;base64,';
-    if(![3,4,5,6].includes(version)||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/\.mp4$/i.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<=0||v.bytes>limits.videoBytes||typeof v.poster!=='string'||v.poster.length>limits.posterLength||!v.poster.startsWith(prefix)||typeof v.duration!=='number'||!Number.isFinite(v.duration)||v.duration<=0||v.duration>86400||![v.width,v.height].every(n=>Number.isInteger(n)&&n>0&&n<=16384)||v.width*v.height>40000000)fail();
+    if(![3,4,5,6,7].includes(version)||typeof v.token!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(v.token)||typeof v.name!=='string'||!v.name||v.name.length>120||/[\\/\x00-\x1f\x7f]/.test(v.name)||!/\.mp4$/i.test(v.name)||!Number.isSafeInteger(v.bytes)||v.bytes<=0||v.bytes>limits.videoBytes||typeof v.poster!=='string'||v.poster.length>limits.posterLength||!v.poster.startsWith(prefix)||typeof v.duration!=='number'||!Number.isFinite(v.duration)||v.duration<=0||v.duration>86400||![v.width,v.height].every(n=>Number.isInteger(n)&&n>0&&n<=16384)||v.width*v.height>40000000)fail();
     posterBudget.total+=v.poster.length;if(posterBudget.total>limits.totalPosters)fail();
     const data=v.poster.slice(prefix.length);
     if(!data.length||data.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(data))fail();
@@ -56,11 +67,11 @@
     if(!head.startsWith('\xff\xd8\xff'))fail();
     const prior=videoRefs.get(v.token),serialized=JSON.stringify(v);
     if(prior&&prior.serialized!==serialized)fail();
-    if(!prior){videoRefs.set(v.token,{serialized,bytes:v.bytes});if([...videoRefs.values()].filter(x=>!x.pdf&&!x.word).length>limits.videoTokens||[...videoRefs.values()].filter(x=>!x.pdf&&!x.word).reduce((n,x)=>n+x.bytes,0)>limits.totalVideoBytes)fail();}
+    if(!prior){videoRefs.set(v.token,{serialized,bytes:v.bytes});if([...videoRefs.values()].filter(x=>!x.pdf&&!x.word&&!x.file).length>limits.videoTokens||[...videoRefs.values()].filter(x=>!x.pdf&&!x.word&&!x.file).reduce((n,x)=>n+x.bytes,0)>limits.totalVideoBytes)fail();}
     return {...v,key,url:v.poster};
   }
   function restore(value){
-    if(!value||![1,2,3,4,5,6].includes(value.version)||!Array.isArray(value.drafts)||value.drafts.length>limits.count)fail();
+    if(!value||![1,2,3,4,5,6,7].includes(value.version)||!Array.isArray(value.drafts)||value.drafts.length>limits.count)fail();
     const state={drafts:new Map(),attachments:new Map(),uncertain:new Set(),keyUncertain:new Set(),labels:new Map(),queues:new Map()};
     const ids=new Set(),tokens=new Set(),videoRefs=new Map(),posterBudget={total:0};let textTotal=0,imageTotal=0,key=0,queueCount=0;
     for(const row of value.drafts){
@@ -68,8 +79,8 @@
       const label=row.label===undefined?'Recovered draft':row.label;
       if(typeof label!=='string'||[...label].length>200||bytes(label)>800)fail();
       ids.add(row.id);textTotal+=bytes(row.text);if(textTotal>limits.totalText)fail();
-      const images=row.images.map(item=>attachment(item,++key,value.version,videoRefs,posterBudget));imageTotal+=images.reduce((n,item)=>n+(['video','markdown','pdf','word'].includes(item.kind)?0:item.bytes),0);if(imageTotal>limits.totalImages)fail();
-      textTotal+=images.filter(x=>x.kind==='markdown').reduce((n,x)=>n+x.bytes,0);if(textTotal>limits.totalText)fail();
+      const images=row.images.map(item=>attachment(item,++key,value.version,videoRefs,posterBudget));imageTotal+=images.reduce((n,item)=>n+(['raster','video','markdown','pdf','word'].includes(item.kind)?0:item.bytes),0);if(imageTotal>limits.totalImages)fail();
+      textTotal+=images.filter(x=>x.kind==='markdown'&&!x.token).reduce((n,x)=>n+x.bytes,0);if(textTotal>limits.totalText)fail();
       state.drafts.set(row.id,row.text);state.attachments.set(row.id,images);state.labels.set(row.id,label);
       if(row.uncertain)state.uncertain.add(row.id);if(row.keyUncertain)state.keyUncertain.add(row.id);
       const queued=row.queue===undefined?[]:row.queue;
@@ -79,7 +90,7 @@
         tokens.add(item.token);queueCount++;if(queueCount>limits.queueCount)fail();
         const images=item.images.map(attachmentValue=>attachment(attachmentValue,++key,value.version,videoRefs,posterBudget));
         if(!item.text.trim()&&!images.length)fail();
-        textTotal+=bytes(item.text)+images.filter(x=>x.kind==='markdown').reduce((n,x)=>n+x.bytes,0);imageTotal+=images.reduce((n,value)=>n+(['video','markdown','pdf','word'].includes(value.kind)?0:value.bytes),0);
+        textTotal+=bytes(item.text)+images.filter(x=>x.kind==='markdown'&&!x.token).reduce((n,x)=>n+x.bytes,0);imageTotal+=images.reduce((n,value)=>n+(['raster','video','markdown','pdf','word'].includes(value.kind)?0:value.bytes),0);
         if(textTotal>limits.totalText||imageTotal>limits.totalImages)fail();
         return {token:item.token,text:item.text,images,status:item.status==='pending'?'uncertain':item.status};
       });
@@ -101,7 +112,8 @@
     const hasMarkdown=rows.some(row=>row.images.some(x=>x.kind==='markdown')||(row.queue||[]).some(item=>item.images.some(x=>x.kind==='markdown')));
     const hasPDF=rows.some(row=>row.images.some(x=>x.kind==='pdf')||(row.queue||[]).some(item=>item.images.some(x=>x.kind==='pdf')));
     const hasWord=rows.some(row=>row.images.some(x=>x.kind==='word')||(row.queue||[]).some(item=>item.images.some(x=>x.kind==='word')));
-    const value={version:hasWord?6:hasPDF?5:hasMarkdown?4:hasVideo?3:2,drafts:rows};restore(value);return value;
+    const hasFiles=rows.some(row=>[...row.images,...(row.queue||[]).flatMap(x=>x.images)].some(x=>x.kind==='raster'||(x.kind==='markdown'&&x.token)));
+    const value={version:hasFiles?7:hasWord?6:hasPDF?5:hasMarkdown?4:hasVideo?3:2,drafts:rows};restore(value);return value;
   }
   function mergeRestored(saved,current,touched=new Set()){
     const merged=restore(saved);

@@ -62,7 +62,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     let previews = PreviewGallery()
     let fileLinks = FileLinks(), draftStore = DraftStore()
     let orcaModels = OrcaModels(), orcaCatalogWork = DispatchQueue(label:"herdr-hud.orca-catalog",qos:.userInitiated)
-    let videoStore=VideoAttachments(), videoWork=DispatchQueue(label:"herdr-hud.video",qos:.userInitiated)
+    let fileStore=FileAttachments(),videoStore=VideoAttachments(), videoWork=DispatchQueue(label:"herdr-hud.video",qos:.userInitiated)
     let mediaPreparation=DispatchQueue(label:"herdr-hud.media-preparation",qos:.userInitiated)
     let pdfStore=PDFAttachments() // videoWork serializes all attachment cache access
     var pdfPreview:PDFPreview?
@@ -70,6 +70,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     var wordPreview:WordPreview?
     var videoPreview:VideoPreview?
     var videoOffers:[String:([URL],String,Date)]=[:]
+    var fileImports:[String:String]=[:] // videoWork only
     var videoImports:[String:String]=[:] // videoWork only: upload token -> exact agent ID
     var orcaLaunching = false
     var orcaUncertain = Set<String>() // work queue only; survives adapter recreation
@@ -289,7 +290,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"markdownAttachmentsSupported":self.client.usesHC,"pdfAttachmentsSupported":self.client.usesHC,"wordAttachmentsSupported":self.client.usesHC,"agentHandoffSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"nativeFileAttachmentsSupported":client.usesHC,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"markdownAttachmentsSupported":self.client.usesHC,"pdfAttachmentsSupported":self.client.usesHC,"wordAttachmentsSupported":self.client.usesHC,"agentHandoffSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
             if CommandLine.arguments.contains("--orca-models") {openPanel();emit("openOrcaModels",[:])}
         case "orcaModels":
             guard client.usesHC,panelOpen,!requestID.isEmpty else { emit(operation,["requestID":requestID,"error":"Open the HUD to load OrcaRouter models."]);return }
@@ -377,13 +378,30 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     DispatchQueue.main.async { self.launchingCodex=false;self.emit("newCodexSession",value);self.refresh() }
                 }
             }
-        case "videoBegin", "videoChunk", "videoFinish", "videoCancel", "videoImport", "openVideo", "pdfImport", "openPDF", "wordImport", "openWord":
-            guard client.usesHC,!requestID.isEmpty,let id=data["id"] as? String,(operation == "videoCancel" || (panelOpen && (["openVideo","openPDF","openWord"].contains(operation) || id==selected))) else {emit(operation,["requestID":requestID,"error":"Select the same local chat before attaching video."]);return}
+        case "fileBegin", "fileChunk", "fileFinish", "fileCancel", "openFile", "videoBegin", "videoChunk", "videoFinish", "videoCancel", "videoImport", "openVideo", "pdfImport", "openPDF", "wordImport", "openWord":
+            guard client.usesHC,!requestID.isEmpty,let id=data["id"] as? String,(["videoCancel","fileCancel"].contains(operation) || (panelOpen && (["openFile","openVideo","openPDF","openWord"].contains(operation) || id==selected))) else {emit(operation,["requestID":requestID,"error":"Select the same local chat before attaching video."]);return}
             let offer = operation == "videoImport" ? videoOffers.removeValue(forKey:data["offer"] as? String ?? "") : nil
             videoWork.async {
                 var result:Row=["requestID":requestID,"id":id]
                 do {
-                    if operation == "wordImport" {
+                    if operation == "fileBegin" {
+                        guard let name=data["name"] as? String,let bytes=data["bytes"] as? Int else{throw HUDError("Invalid file upload.")}
+                        let token=try self.fileStore.begin(name:name,bytes:bytes);self.fileImports[token]=id;result["token"]=token
+                    } else if ["fileChunk","fileFinish","fileCancel"].contains(operation) {
+                        guard let token=data["token"] as? String,self.fileImports[token]==id else{throw HUDError("File upload changed. Attach the file again.")}
+                        if operation == "fileChunk" {guard let offset=data["offset"] as? Int,let bytes=data["data"] as? String else{throw HUDError("Invalid file chunk.")};try self.fileStore.append(token:token,offset:offset,dataBase64:bytes)}
+                        else if operation == "fileFinish" {
+                            defer{self.fileStore.cancel(token:token);self.fileImports.removeValue(forKey:token)}
+                            result["attachment"]=try self.fileStore.finish(token:token){url,name in
+                                if url.pathExtension=="pdf" {return try self.pdfStore.importFile(url,name:name)}
+                                if url.pathExtension=="docx" {return try self.wordStore.importFile(url,name:name)}
+                                return try self.fileStore.importFile(url,name:name)
+                            }
+                        } else {self.fileStore.cancel(token:token);self.fileImports.removeValue(forKey:token)}
+                    } else if operation == "openFile" {
+                        let item=data["attachment"] as? Row ?? [:],url=try self.fileStore.reference(item)
+                        DispatchQueue.main.async {self.wordPreview?.stop();let preview=WordPreview(url:url,name:item["name"] as? String ?? "Attachment preview");self.wordPreview=preview;preview.window?.level=NSWindow.Level(rawValue:self.panel.level.rawValue+1);preview.showWindow(nil);preview.window?.makeKeyAndOrderFront(nil);NSApp.activate(ignoringOtherApps:true)}
+                    } else if operation == "wordImport" {
                         guard let name=data["name"] as? String,let bytes=data["data"] as? String else{throw HUDError("Invalid Word attachment.")}
                         result["attachment"]=try self.wordStore.importData(name:name,dataBase64:bytes)
                     } else if operation == "openWord" {
@@ -403,7 +421,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                         result["attachments"]=try offer.0.map{url in
                             if url.pathExtension.lowercased() == "docx" {return try self.wordStore.importFile(url)}
                             if url.pathExtension.lowercased() == "pdf" {return try self.pdfStore.importFile(url)}
-                            if ["md","markdown"].contains(url.pathExtension.lowercased()) {return try MarkdownAttachment.importFile(url)}
+                            if FileAttachments.kind(name:url.lastPathComponent) != nil {return try self.fileStore.importFile(url)}
                             return try self.videoStore.importFile(url)
                         }
                     } else if operation == "videoBegin" {
@@ -425,7 +443,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 var result: Row = ["requestID":requestID]
                 do {
                     if operation == "loadDrafts" { result["snapshot"] = try self.draftStore.load() }
-                    else {let snapshot=try DraftStore.validate(data["snapshot"] ?? [:]);try self.videoWork.sync {var seen=Set<String>();for row in snapshot["drafts"] as? [Row] ?? [] {let groups=[row["images"] as? [Row] ?? []]+(row["queue"] as? [Row] ?? []).map{$0["images"] as? [Row] ?? []};for group in groups {for item in group where ["video","pdf","word"].contains(item["kind"] as? String ?? "") {if let token=item["token"] as? String,seen.insert((item["kind"] as! String)+token).inserted {if item["kind"] as? String == "word" {_ = try self.wordStore.reference(item,verifyContent:false)}else if item["kind"] as? String == "pdf" {_ = try self.pdfStore.reference(item,verifyContent:false)}else{_ = try self.videoStore.reference(item,verifyContent:false)}}}}}};try self.draftStore.save(snapshot); result["ok"] = true }
+                    else {let snapshot=try DraftStore.validate(data["snapshot"] ?? [:]);try self.videoWork.sync {var seen=Set<String>();for row in snapshot["drafts"] as? [Row] ?? [] {let groups=[row["images"] as? [Row] ?? []]+(row["queue"] as? [Row] ?? []).map{$0["images"] as? [Row] ?? []};for group in groups {for item in group where ["raster","markdown","video","pdf","word"].contains(item["kind"] as? String ?? "") && item["token"] != nil {if let token=item["token"] as? String,seen.insert((item["kind"] as! String)+token).inserted {if ["raster","markdown"].contains(item["kind"] as? String ?? "") {_ = try self.fileStore.reference(item,verifyContent:false)}else if item["kind"] as? String == "word" {_ = try self.wordStore.reference(item,verifyContent:false)}else if item["kind"] as? String == "pdf" {_ = try self.pdfStore.reference(item,verifyContent:false)}else{_ = try self.videoStore.reference(item,verifyContent:false)}}}}}};try self.draftStore.save(snapshot); result["ok"] = true }
                 } catch { result["error"] = error.localizedDescription }
                 let value=result
                 DispatchQueue.main.async { self.emit(operation,value) }
@@ -610,7 +628,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard attachments == nil || attachments is [Row] else{throw HUDError("Invalid attachments.")}
         let items=attachments as? [Row] ?? [];guard items.count<=3 else{throw HUDError("Attach up to three files.")}
         let videos=items.filter{$0["kind"] as? String == "video"}
-        guard !items.contains(where:{["video","markdown","pdf","word"].contains($0["kind"] as? String ?? "")}) || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("File attachments require a local Claude, Codex or managed OpenCode chat.")}
+        guard !items.contains(where:{["raster","video","markdown","pdf","word"].contains($0["kind"] as? String ?? "")}) || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("File attachments require a local Claude, Codex or managed OpenCode chat.")}
         if items.contains(where:{["video","pdf"].contains($0["kind"] as? String ?? "")}) {
             if row["agent"] as? String == "opencode" {
                 guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("Open this model through the HUD OrcaRouter picker first.")}
@@ -618,7 +636,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             }
             DispatchQueue.main.async {self.emit("notice",["message":"Preparing attachment visuals and local text analysis…"])}
         }
-        if videos.isEmpty && !items.contains(where:{["pdf","word"].contains($0["kind"] as? String ?? "")}) {completion(Result {try VideoMedia.prepare(message:message,items:items,resolve:{_ in throw HUDError("Unexpected video reference.")})});return}
+        if videos.isEmpty && !items.contains(where:{["pdf","word","raster"].contains($0["kind"] as? String ?? "") || $0["token"] != nil}) {completion(Result {try VideoMedia.prepare(message:message,items:items,resolve:{_ in throw HUDError("Unexpected video reference.")})});return}
         if items.contains(where:{$0["kind"] as? String == "word"}) {DispatchQueue.main.async {self.emit("notice",["message":"Preparing Word document text and embedded images…"])}}
         mediaPreparation.async {
             let prepared=Result {try VideoMedia.prepare(message:message,items:items,resolve:{item in
@@ -626,7 +644,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                     if item["kind"] as? String == "word" {return try self.wordStore.reference(item)}
                     return item["kind"] as? String == "pdf" ? try self.pdfStore.reference(item) : try self.videoStore.reference(item)
                 }
-            },word:{url in try WordAnalysis.prepare(url:url,saveTranscript:{text,source in
+            },file:{item in try self.videoWork.sync {try self.fileStore.prepare(item)}},word:{url in try WordAnalysis.prepare(url:url,saveTranscript:{text,source in
                 try self.videoWork.sync {try WordAnalysis.persist(text,url:source)}
             })},pdf:{url in try PDFAnalysis.prepare(url:url,saveTranscript:{text,source in
                 try self.videoWork.sync {try PDFAnalysis.persist(text,url:source)}

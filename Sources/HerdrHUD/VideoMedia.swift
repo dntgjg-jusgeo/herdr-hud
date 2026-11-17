@@ -6,13 +6,21 @@ enum VideoMedia {
     static func prepare(message:String,items:[Row],resolve:(Row)throws->URL,
                         visual:(URL)throws->(image:Row,summary:String) = VideoAnalysis.prepare,
                         transcribe:(URL)throws->String = {try VideoTranscription.transcribe(url:$0)},
+                        file:(Row)throws->(url:URL,image:Row?,summary:String) = {try FileAttachments().prepare($0)},
                         word:(URL)throws->(images:[Row],summary:String) = {try WordAnalysis.prepare(url:$0)},
                         pdf:(URL)throws->(image:Row,summary:String) = {try PDFAnalysis.prepare(url:$0)}) throws -> (String,[Row]) {
         guard items.count <= 3 else{throw HUDError("Attach up to three files.")}
-        guard items.allSatisfy({$0["kind"] == nil || ["image","video","markdown","pdf","word"].contains($0["kind"] as? String ?? "")}) else {throw HUDError("Invalid attachment kind.")}
-        if !items.contains(where:{["video","markdown","pdf","word"].contains($0["kind"] as? String ?? "")}) {return(message,items)}
+        guard items.allSatisfy({$0["kind"] == nil || ["image","raster","video","markdown","pdf","word"].contains($0["kind"] as? String ?? "")}) else {throw HUDError("Invalid attachment kind.")}
+        if !items.contains(where:{["raster","video","markdown","pdf","word"].contains($0["kind"] as? String ?? "")}) {return(message,items)}
         var images:[Row]=[],notes:[String]=[], hasVideo = false
         for item in items {
+            if item["kind"] as? String == "raster" || (item["kind"] as? String == "markdown" && item["token"] != nil) {
+                let material=try file(item)
+                if let image=material.image {images.append(image)}
+                let label=material.image == nil ? "Markdown attachment" : "Image attachment \(images.count)"
+                notes.append("\(label): \(encode(item["name"] ?? "file"))\nOriginal local file: \(encode(material.url.path))\n"+material.summary)
+                continue
+            }
             if item["kind"] as? String == "word" {
                 let safe=try WordAttachments.validateReference(item),url=try resolve(safe),analysis=try word(url)
                 guard analysis.images.count<=1 else{throw HUDError("Word analysis exceeds the attachment image limit.")}

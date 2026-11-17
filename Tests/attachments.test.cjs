@@ -10,63 +10,81 @@ function harness(){
  class Image{set src(v){this.naturalWidth=4;this.naturalHeight=4;this.onload();}}
  const HUDModel=require('../Sources/HerdrHUD/Resources/model.js');
  const context=vm.createContext({window,document,FileReader,Image,TextEncoder,TextDecoder,HUDModel,setInterval(){},setTimeout,clearTimeout,console});vm.runInContext(source,context);
- vm.runInContext("supportsAttachments=true;agents=[{id:'A',online:true,can_attach:true,agent_status:'idle',agent:'codex'},{id:'B',online:true,can_attach:true,agent_status:'idle',agent:'claude'}];selected='A'",context);
+ vm.runInContext("supportsNativeFiles=true;supportsAttachments=true;agents=[{id:'A',online:true,can_attach:true,agent_status:'idle',agent:'codex'},{id:'B',online:true,can_attach:true,agent_status:'idle',agent:'claude'}];selected='A'",context);
  return {context,messages,reads,listeners,$:id=>document.getElementById(id),eval:s=>vm.runInContext(s,context)};
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
-test('real drop handler prevents default, stages captured draft and never uploads',async()=>{
+
+const token='01234567-89ab-cdef-0123-456789abcdef';
+const file=(name,type,size=30)=>({name,type,size,slice(start,end){return {size:end-start};}});
+const ref=(kind,name,bytes=30)=>({kind,token,name,bytes,...(kind==='pdf'?{pages:2}:{})});
+function receive(h,type,data){h.context.window.receive({type,data});}
+async function completeNative(h,item){
+ const begin=h.messages.filter(m=>m.op==='fileBegin').at(-1);assert.ok(begin);
+ receive(h,'fileBegin',{requestID:begin.requestID,token});await tick();
+ assert.equal(h.reads.length,1);h.reads[0]();await tick();
+ const chunk=h.messages.find(m=>m.op==='fileChunk');assert.ok(chunk);assert.equal(chunk.offset,0);
+ receive(h,'fileChunk',{requestID:chunk.requestID,ok:true});await tick();
+ const finish=h.messages.find(m=>m.op==='fileFinish');assert.ok(finish);
+ receive(h,'fileFinish',{requestID:finish.requestID,attachment:item});await tick();
+}
+test('drop streams to native without decoding image, binds completion to captured draft',async()=>{
  const h=harness();let prevented=false;
- h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{type:'image/png',name:'/fakepath/screenshot.png',size:3}]}});
- assert.equal(prevented,true);assert.equal(h.$('send').disabled,true);
- h.eval("selected='B'");h.reads[0]();await tick();
- assert.equal(h.eval("imagesFor('A').length"),1);assert.equal(h.eval("imagesFor('B').length"),0);
- h.eval("selected='A';renderHeader()");assert.equal(h.$('attachments').children[0].children[1].textContent,'screenshot.png');
- assert.equal(h.$('prompt').value,'');assert.equal(h.messages.filter(m=>m.op==='prompt').length,0);
+ h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[file('screenshot.png','image/png',6*1024*1024)]}});
+ assert.equal(prevented,true);assert.equal(h.$('send').disabled,true);assert.equal(h.reads.length,0);
+ // Refuse the synthetic large upload; large import boundaries/real decoding are native-tested.
+ const begin=h.messages.find(m=>m.op==='fileBegin');assert.equal(begin.bytes,6*1024*1024);
+ receive(h,'fileBegin',{requestID:begin.requestID,error:'controlled refusal'});await tick();
+ assert.equal(h.eval("attachmentLoads.get('A')"),0);assert.equal(h.messages.some(m=>m.op==='prompt'),false);
+ const h2=harness();h2.eval("stageImages([fixture])".replace('fixture',JSON.stringify({name:'screenshot.png',type:'image/png',size:30}))); // staged test file has no browser read until native accepts
+ const request=h2.messages.find(m=>m.op==='fileBegin');h2.eval("selected='B'");receive(h2,'fileBegin',{requestID:request.requestID,error:'controlled refusal'});await tick();
+ assert.equal(h2.eval("imagesFor('B').length"),0);
+});
+test('image sends opaque original once and uncertain receipt preserves draft',async()=>{
+ const h=harness();h.context.fixture=file('image.png','image/png');h.eval('stageImages([fixture])');await completeNative(h,ref('raster','image.png'));
+ h.eval('send()');const request=h.messages.find(m=>m.op==='prompt');assert.equal(request.attachments[0].token,token);assert.equal(request.attachments[0].data,undefined);
+ receive(h,'prompt',{requestID:request.requestID,error:'delivery uncertain'});assert.equal(h.eval("imagesFor('A').length"),1);assert.equal(h.$('send').disabled,true);
+ h.eval('uncertain.clear();renderHeader();send()');const retry=h.messages.filter(m=>m.op==='prompt').at(-1);receive(h,'prompt',{requestID:retry.requestID,ok:true});assert.equal(h.eval("imagesFor('A').length"),0);
+});
+test('unsupported and oversized files reject before bridge read',async()=>{
+ const h=harness();h.eval("stageImages([{type:'image/svg+xml',size:3,name:'unsafe.svg'}]);stageImages([{type:'image/png',size:104857601,name:'large.png'}]);supportsMarkdown=true;stageMarkdown([{name:'large.md',size:10485761}]);supportsPDF=true;stagePDFs([{name:'large.pdf',size:104857601}]);supportsWord=true;stageWords([{name:'large.docx',size:104857601}]);supportsVideos=true;stageVideos([{name:'large.mp4',size:52428801}])");
+ assert.equal(h.reads.length,0);assert.equal(h.messages.some(m=>m.op==='fileBegin'||m.op==='videoBegin'),false);
+});
+test('paste stages once, preserves mixed text, and waits for Send',async()=>{
+ const h=harness(),image=file('screenshot.png','image/png');let prevented=false;
+ h.$('prompt').value='before after';h.$('prompt').selectionStart=7;h.$('prompt').selectionEnd=7;
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',getAsFile:()=>image}],files:[image],getData:()=> 'text '}});
+ assert.equal(prevented,true);assert.equal(h.$('prompt').value,'before text after');assert.equal(h.messages.filter(m=>m.op==='fileBegin').length,1);
+ await completeNative(h,ref('raster','screenshot.png'));assert.equal(h.eval("imagesFor('A').length"),1);assert.equal(h.messages.some(m=>m.op==='prompt'),false);
+});
+test('text paste remains native and file fallback preserves paste behavior',async()=>{
+ const h=harness();let prevented=false;
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'string'}],files:[]}});assert.equal(prevented,false);
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[],files:[file('paste.png','image/png')],getData:()=>''}});assert.equal(prevented,true);await completeNative(h,ref('raster','paste.png'));
+ assert.equal(h.eval("imagesFor('A').length"),1);
+});
+test('new image preview opens verified full original natively without changing draft',async()=>{
+ const h=harness();h.$('prompt').value='keep this draft';h.$('prompt').oninput();h.context.fixture=file('image.png','image/png');h.eval('stageImages([fixture])');await completeNative(h,ref('raster','image.png'));
+ h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,'openFile');assert.equal(h.messages.at(-1).attachment.token,token);assert.equal(h.$('prompt').value,'keep this draft');assert.equal(h.messages.some(m=>m.op==='prompt'),false);
  h.$('attachments').children[0].children[2].click();assert.equal(h.eval("imagesFor('A').length"),0);
 });
-test('send includes bytes once, successful receipt clears only submitted images; failure preserves and blocks',async()=>{
- const h=harness();h.eval("stageImages([{type:'image/png',name:'image.png',size:3}])");h.reads[0]();await tick();
- h.eval('send()');const request=h.messages.find(m=>m.op==='prompt');assert.equal(request.attachments[0].data,'YWJj');assert.equal(request.message,'');
- h.window=h.context.window;h.window.receive({type:'prompt',data:{requestID:request.requestID,error:'delivery uncertain'}});
- assert.equal(h.eval("imagesFor('A').length"),1);assert.equal(h.$('send').disabled,true);
- h.eval("uncertain.clear();renderHeader();send()");const retry=h.messages.filter(m=>m.op==='prompt').at(-1);
- h.window.receive({type:'prompt',data:{requestID:retry.requestID,ok:true}});assert.equal(h.eval("imagesFor('A').length"),0);
-});
-test('unsupported drop cannot insert paths, and malformed/oversize files never read',()=>{
- const h=harness();h.eval('supportsAttachments=false');let prevented=false;
- h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{type:'image/png',size:3,name:'image.png'}]}});assert.equal(prevented,true);assert.equal(h.reads.length,0);
- h.eval("supportsAttachments=true;stageImages([{type:'image/svg+xml',size:3,name:'unsafe.svg'}]);stageImages([{type:'image/png',size:5000000,name:'large.png'}])");assert.equal(h.reads.length,0);
-});
-test('paste stages an item image once, preserves mixed text, and waits for Send',async()=>{
- const h=harness(),file={type:'image/png',name:'screenshot.png',size:3};let prevented=false;
- h.$('prompt').value='before after';h.$('prompt').selectionStart=7;h.$('prompt').selectionEnd=7;
- h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',type:file.type,getAsFile:()=>file}],files:[file],getData:()=> 'text '}});
- assert.equal(prevented,true);assert.equal(h.$('prompt').value,'before text after');assert.equal(h.eval("drafts.get('A')"),'before text after');assert.equal(h.reads.length,1);
- h.reads[0]();await tick();assert.equal(h.eval("imagesFor('A').length"),1);assert.equal(h.messages.filter(m=>m.op==='prompt').length,0);
-});
-test('text paste remains native; file fallback handles images including unsupported types',async()=>{
- const h=harness();let prevented=false;
- h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'string',type:'text/plain'}],files:[]}});assert.equal(prevented,false);assert.equal(h.reads.length,0);
- h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[],files:[{type:'image/png',name:'paste.png',size:3}],getData:()=>''}});assert.equal(prevented,true);assert.equal(h.reads.length,1);
- h.reads[0]();await tick();assert.equal(h.eval("imagesFor('A').length"),1);
- prevented=false;h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[],files:[{type:'image/tiff',name:'paste.tiff',size:3}],getData:()=>''}});assert.equal(prevented,true);assert.equal(h.reads.length,1);
-});
-
-test('attachment preview opens and closes without sending or changing the draft',async()=>{
- const h=harness();h.$('prompt').value='keep this draft';h.$('prompt').oninput();
- h.eval("stageImages([{type:'image/png',name:'image.png',size:3}])");h.reads[0]();await tick();
- const chip=h.$('attachments').children[0];chip.children[0].click();
- assert.equal(h.$('attachment-preview').open,true);assert.equal(h.$('attachment-preview-name').textContent,'image.png');
- assert.equal(h.$('attachment-preview-image').src,'data:image/png;base64,YWJj');
- h.eval('renderHeader()');const current=h.$('attachments').children[0].children[0];
+test('legacy inline image retains modal preview and Escape focus',()=>{
+ const h=harness();h.eval("attachments.set('A',[{key:1,name:'old.png',url:'data:image/png;base64,YWJj',data:'YWJj',bytes:3}]);renderHeader()");
+ const current=h.$('attachments').children[0].children[0];current.click();assert.equal(h.$('attachment-preview').open,true);
  let prevented=false;h.listeners.keydown({key:'Escape',isComposing:false,preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(h.$('attachment-preview').open,false);assert.equal(current.focused,true);
- assert.equal(h.$('prompt').value,'keep this draft');assert.equal(h.eval("imagesFor('A').length"),1);
- assert.equal(h.messages.filter(m=>m.op==='prompt'||m.op==='close').length,0);
- current.click();h.$('attachment-preview-close').click();assert.equal(h.$('attachment-preview').open,false);
- current.click();h.eval("select('B')");assert.equal(h.$('attachment-preview').open,false);assert.equal(h.eval("imagesFor('A').length"),1);
- h.context.window.handleEscape();assert.equal(h.messages.filter(m=>m.op==='close').length,1);
 });
-
+for(const [kind,name,type,flag,preview] of [['markdown','notes.md','text/markdown','supportsMarkdown','openFile'],['pdf','guide.pdf','application/pdf','supportsPDF','openPDF'],['word','report.docx','application/vnd.openxmlformats-officedocument.wordprocessingml.document','supportsWord','openWord']]){
+ test(kind+' drop streams privately and previews original without sending',async()=>{
+  const h=harness();h.eval(flag+'=true');let prevented=false;
+  h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[file(name,type)]}});assert.equal(prevented,true);
+  await completeNative(h,ref(kind,name));assert.equal(h.eval("imagesFor('A')[0].kind"),kind);h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,preview);assert.equal(h.messages.some(x=>x.op==='prompt'),false);
+ });
+}
+test('Finder large Markdown offer preserves exact draft and native preview reference',async()=>{
+ const h=harness();h.eval('supportsVideos=true;supportsMarkdown=true;stageVideoOffer({id:"A",offer:"fixture",count:1})');const request=h.messages.find(m=>m.op==='videoImport');h.eval("selected='B'");
+ receive(h,'videoImport',{requestID:request.requestID,id:'A',attachments:[ref('markdown','notes.md',22000)]});await tick();
+ assert.equal(h.eval("imagesFor('A')[0].token"),token);assert.equal(h.eval("imagesFor('B').length"),0);assert.equal(h.eval("imagesFor('A')[0].text"),undefined);
+});
 const video={kind:'video',token:'12345678-1234-1234-1234-123456789abc',name:'clip.mp4',bytes:30,poster:'data:image/jpeg;base64,/9j/2Q==',duration:1,width:64,height:64};
 test('native MP4 paste/drop offer stages a preview token and sends no path until Send',async()=>{
  const h=harness();h.eval('supportsVideos=true');h.context.window.receive({type:'videoOffer',data:{id:'A',offer:'opaque',count:1}});
@@ -83,60 +101,26 @@ test('MP4 clipboard files suppress path text and request bounded native import',
  h.context.window.receive({type:'videoBegin',data:{requestID:started.requestID,error:'fixture refusal'}});await tick();assert.equal(h.eval("attachmentLoads.get('A')"),0);assert.equal(h.messages.some(m=>m.op==='prompt'),false);
 });
 
-test('Markdown drop stages exact UTF-8 contents with safe preview and captured identity',async()=>{
- const h=harness();h.eval("supportsMarkdown=true");const text='# Notes\n<script>alert(1)</script>\nCafé';const bytes=new TextEncoder().encode(text);let finish;
- const file={name:'notes.md',type:'text/markdown',size:bytes.length,arrayBuffer:()=>new Promise(resolve=>{finish=()=>resolve(bytes.buffer);})};let prevented=false;
- h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[file]}});
- assert.equal(prevented,true);h.eval("selected='B'");finish();await tick();
- assert.equal(h.eval("imagesFor('A')[0].text"),text);assert.equal(h.eval("imagesFor('B').length"),0);
- h.eval("selected='A';renderHeader()");h.$('attachments').children[0].children[0].click();
- assert.equal(h.$('attachment-preview-text').textContent,text);assert.equal(h.$('attachment-preview-image').hidden,true);
- assert.equal(h.$('prompt').value,'');assert.equal(h.messages.some(m=>m.op==='prompt'),false);
+
+test('successful native image completion remains with A after selecting B',async()=>{
+ const h=harness();h.context.fixture=file('image.png','image/png');h.eval('stageImages([fixture])');h.eval("selected='B'");
+ await completeNative(h,ref('raster','image.png'));assert.equal(h.eval("imagesFor('A')[0].token"),token);assert.equal(h.eval("imagesFor('B').length"),0);
+ h.eval("selected='A';renderHeader()");assert.equal(h.$('attachments').children[0].children[1].textContent,'image.png');
 });
-test('Markdown rejects oversized and non-UTF8 files without staging',async()=>{
- const h=harness();h.eval("supportsMarkdown=true");
- await h.context.window;h.eval("stageMarkdown([{name:'big.md',size:16385}])");assert.equal(h.eval("imagesFor('A').length"),0);
- h.context.bad={name:'bad.md',size:1,arrayBuffer:async()=>new Uint8Array([255]).buffer};await h.eval('stageMarkdown([bad])');
- assert.equal(h.eval("imagesFor('A').length"),0);assert.equal(h.eval("attachmentLoads.get('A')"),0);
+test('Finder Word offer preserves original exact draft after selecting another agent',async()=>{
+ const h=harness();h.eval('supportsVideos=true;supportsWord=true;stageVideoOffer({id:"A",offer:"finder-word",count:1})');const request=h.messages.find(m=>m.op==='videoImport');h.eval("selected='B'");
+ receive(h,'videoImport',{requestID:request.requestID,id:'A',attachments:[ref('word','report.docx')]});await tick();assert.equal(h.eval("imagesFor('A')[0].token"),token);assert.equal(h.eval("imagesFor('B').length"),0);assert.equal(h.messages.some(m=>m.op==='prompt'),false);
 });
-test('native Finder Markdown paste offer creates the same previewable attachment',async()=>{
- const h=harness();h.eval("supportsVideos=true;supportsMarkdown=true;stageVideoOffer({id:'A',offer:'fixture',count:1})");
- const request=h.messages.find(x=>x.op==='videoImport');assert.ok(request);
- h.context.window.receive({type:'videoImport',data:{requestID:request.requestID,id:'A',ok:true,attachments:[{kind:'markdown',name:'notes.md',text:'# Pasted',bytes:8}]}});await tick();
- assert.equal(h.eval("imagesFor('A')[0].kind"),'markdown');assert.equal(h.eval("imagesFor('A')[0].text"),'# Pasted');assert.equal(h.$('prompt').value,'');assert.equal(h.eval("attachmentLoads.get('A')"),0);
- assert.equal(h.messages.some(x=>x.op==='prompt'),false);
+test('Word Finder clipboard suppresses pasted path and native failure clears loading only',async()=>{
+ const h=harness();h.eval('supportsWord=true');const doc=file('report.docx','application/vnd.openxmlformats-officedocument.wordprocessingml.document');let prevented=false;
+ h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',getAsFile:()=>doc}],files:[doc],getData:()=>'/Users/example/report.docx'}});
+ assert.equal(prevented,true);assert.equal(h.$('prompt').value,'');const request=h.messages.find(m=>m.op==='fileBegin');receive(h,'fileBegin',{requestID:request.requestID,error:'synthetic failure'});await tick();assert.equal(h.eval("imagesFor('A').length"),0);assert.equal(h.eval("attachmentLoads.get('A')"),0);
 });
-test('PDF drop imports privately then preview requests native PDF window',async()=>{
- const h=harness();h.eval('supportsPDF=true');let prevented=false;
- h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{name:'guide.pdf',type:'application/pdf',size:100}]}});assert.equal(prevented,true);
- h.reads[0]();await tick();const request=h.messages.find(x=>x.op==='pdfImport');assert.ok(request);assert.equal(h.messages.some(x=>x.op==='prompt'),false);
- h.context.window.receive({type:'pdfImport',data:{requestID:request.requestID,attachment:{kind:'pdf',token:'01234567-89ab-cdef-0123-456789abcdef',name:'guide.pdf',bytes:100,pages:2}}});await tick();
- assert.equal(h.eval("imagesFor('A')[0].kind"),'pdf');h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,'openPDF');assert.equal(h.$('prompt').value,'');
+test('legacy host image path still reads and previews inline images',async()=>{
+ const h=harness();h.eval('supportsNativeFiles=false;stageImages([{name:"old.png",type:"image/png",size:3}])');assert.equal(h.messages.some(m=>m.op==='fileBegin'),false);h.reads[0]();await tick();
+ h.$('attachments').children[0].children[0].click();assert.equal(h.$('attachment-preview').open,true);h.$('attachment-preview-close').click();assert.equal(h.$('attachment-preview').open,false);
+ h.$('attachments').children[0].children[0].click();h.eval("select('B')");assert.equal(h.$('attachment-preview').open,false);assert.equal(h.eval("imagesFor('A').length"),1);
 });
-test('PDF imports refuse oversized files before reading',()=>{
- const h=harness();h.eval('supportsPDF=true;stagePDFs([{name:"big.pdf",size:10485761}])');assert.equal(h.reads.length,0);assert.equal(h.messages.some(x=>x.op==='pdfImport'),false);
-});
-test('Word drop imports privately and click opens native preview without sending',async()=>{
- const h=harness();h.eval('supportsWord=true');let prevented=false;
- h.listeners.drop({preventDefault(){prevented=true;},dataTransfer:{types:['Files'],files:[{name:'report.docx',type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',size:100}]}});assert.equal(prevented,true);
- h.reads[0]();await tick();const request=h.messages.find(x=>x.op==='wordImport');assert.ok(request);
- h.context.window.receive({type:'wordImport',data:{requestID:request.requestID,attachment:{kind:'word',token:'01234567-89ab-cdef-0123-456789abcdef',name:'report.docx',bytes:100}}});await tick();
- assert.equal(h.eval("imagesFor('A')[0].kind"),'word');h.$('attachments').children[0].children[0].click();assert.equal(h.messages.at(-1).op,'openWord');assert.equal(h.$('prompt').value,'');assert.equal(h.messages.some(x=>x.op==='prompt'),false);
-});
-test('Word paste consumes file instead of inserting Finder path',async()=>{
- const h=harness();h.eval('supportsWord=true');const file={name:'report.docx',type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',size:100};let prevented=false;
- h.$('prompt').onpaste({preventDefault(){prevented=true;},clipboardData:{items:[{kind:'file',getAsFile:()=>file}],files:[file],getData:()=>'/Users/example/report.docx'}});
- assert.equal(prevented,true);assert.equal(h.reads.length,1);assert.equal(h.$('prompt').value,'');
- h.reads[0]();await tick();const request=h.messages.find(x=>x.op==='wordImport');assert.ok(request);
- h.context.window.receive({type:'wordImport',data:{requestID:request.requestID,error:'synthetic failure'}});await tick();assert.equal(h.eval("imagesFor('A').length"),0);assert.equal(h.eval("attachmentLoads.get('A')"),0);
-});
-test('native Finder Word offer preserves captured agent and previews the file',async()=>{
- const h=harness();h.eval('supportsVideos=true;supportsWord=true');h.context.window.receive({type:'videoOffer',data:{id:'A',offer:'finder-word',count:1}});await tick();
- const request=h.messages.find(x=>x.op==='videoImport');assert.ok(request);h.eval("selected='B'");
- h.context.window.receive({type:'videoImport',data:{requestID:request.requestID,id:'A',ok:true,attachments:[{kind:'word',token:'01234567-89ab-cdef-0123-456789abcdef',name:'report.docx',bytes:100}]}});await tick();
- assert.equal(h.eval("imagesFor('A')[0].kind"),'word');assert.equal(h.eval("imagesFor('B').length"),0);assert.equal(h.messages.some(x=>x.op==='prompt'),false);
-});
-test('Word imports refuse oversized and unsupported files before reading',()=>{
- const h=harness();h.eval('stageWords([{name:"report.docx",size:100}])');assert.equal(h.reads.length,0);
- h.eval('supportsWord=true;stageWords([{name:"big.docx",size:10485761}])');assert.equal(h.reads.length,0);
+test('native preview and cancellation errors appear without mutating drafts',()=>{
+ const h=harness();receive(h,'openFile',{error:'preview failed'});assert.equal(h.$('notice').textContent,'preview failed');receive(h,'fileCancel',{error:'cancel failed'});assert.equal(h.$('notice').textContent,'cancel failed');assert.equal(h.messages.some(m=>m.op==='prompt'),false);
 });
