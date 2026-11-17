@@ -602,18 +602,20 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         let items=attachments as? [Row] ?? [];guard items.count<=3 else{throw HUDError("Attach up to three files.")}
         let videos=items.filter{$0["kind"] as? String == "video"}
         guard !items.contains(where:{["video","markdown","pdf"].contains($0["kind"] as? String ?? "")}) || (row["machine_id"] as? String == "local" && ["claude","codex","opencode"].contains(row["agent"] as? String ?? "")) else{throw HUDError("File attachments require a local Claude, Codex or managed OpenCode chat.")}
-        if !videos.isEmpty {
+        if items.contains(where:{["video","pdf"].contains($0["kind"] as? String ?? "")}) {
             if row["agent"] as? String == "opencode" {
                 guard let adapter=try self.orcaLauncher.adapter(for:row) else {throw HUDError("Open this model through the HUD OrcaRouter picker first.")}
                 try adapter.verifyCatalog(requireVision:true)
             }
-            DispatchQueue.main.async {self.emit("notice",["message":"Preparing video frames and local speech transcript…"])}
+            DispatchQueue.main.async {self.emit("notice",["message":"Preparing attachment visuals and local text analysis…"])}
         }
         if videos.isEmpty && !items.contains(where:{$0["kind"] as? String == "pdf"}) {completion(Result {try VideoMedia.prepare(message:message,items:items,resolve:{_ in throw HUDError("Unexpected video reference.")})});return}
         mediaPreparation.async {
             let prepared=Result {try VideoMedia.prepare(message:message,items:items,resolve:{item in
                 try self.videoWork.sync {item["kind"] as? String == "pdf" ? try self.pdfStore.reference(item) : try self.videoStore.reference(item)}
-            })}
+            },pdf:{url in try PDFAnalysis.prepare(url:url,saveTranscript:{text,source in
+                try self.videoWork.sync {try PDFAnalysis.persist(text,url:source)}
+            })})}
             self.work.async {completion(prepared)}
         }
     }

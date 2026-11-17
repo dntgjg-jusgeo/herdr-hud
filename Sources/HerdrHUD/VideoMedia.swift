@@ -6,7 +6,7 @@ enum VideoMedia {
     static func prepare(message:String,items:[Row],resolve:(Row)throws->URL,
                         visual:(URL)throws->(image:Row,summary:String) = VideoAnalysis.prepare,
                         transcribe:(URL)throws->String = {try VideoTranscription.transcribe(url:$0)},
-                        pdfText:(URL)throws->String = PDFAttachments.promptMaterial) throws -> (String,[Row]) {
+                        pdf:(URL)throws->(image:Row,summary:String) = {try PDFAnalysis.prepare(url:$0)}) throws -> (String,[Row]) {
         guard items.count <= 3 else{throw HUDError("Attach up to three files.")}
         guard items.allSatisfy({$0["kind"] == nil || ["image","video","markdown","pdf"].contains($0["kind"] as? String ?? "")}) else {throw HUDError("Invalid attachment kind.")}
         if !items.contains(where:{["video","markdown","pdf"].contains($0["kind"] as? String ?? "")}) {return(message,items)}
@@ -14,7 +14,9 @@ enum VideoMedia {
         for item in items {
             if item["kind"] as? String == "pdf" {
                 let safe=try PDFAttachments.validateReference(item),url=try resolve(safe)
-                notes.append("PDF attachment: \(encode(safe["name"]!))\nOriginal local PDF: \(encode(url.path))\n"+(try pdfText(url)))
+                let analysis=try pdf(url)
+                images.append(analysis.image)
+                notes.append("PDF image attachment \(images.count): \(encode(safe["name"]!))\nOriginal local PDF: \(encode(url.path))\n"+analysis.summary)
                 continue
             }
             if item["kind"] as? String == "markdown" {

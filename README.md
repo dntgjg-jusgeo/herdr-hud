@@ -163,6 +163,25 @@ because sent or uncertain prompts may still need them. Incomplete imports expire
 Snapshots containing videos use version 3; older HUD builds refuse these rather
 than silently dropping attachments. Image-only snapshots remain version 2.
 
+### PDF analysis on macOS
+
+Attach a PDF up to 10 MB/200 pages. On Send, the HUD renders every page locally
+at up to 2000 pixels on its longest edge and runs Apple Vision OCR, including on
+pages that already have embedded text. Local Claude, Codex and managed OpenCode
+receive one labeled contact sheet per PDF (at most six evenly sampled pages),
+embedded text and OCR excerpt, and paths to the original private PDF and the full
+page-marked text artifact. OpenCode requires a Vision model. The sheet is sampled
+visual coverage; diagrams, small details and unsampled pages need closer inspection
+of the original PDF with local tools. Automatic OCR can miss or misread content.
+
+Analysis runs in the background before sending. A checked 180-second analysis
+deadline, 20-second OCR cancellation deadline per page, 2 MB full-text limit, and
+cache capacity failures retain the draft without sending. Native page rendering
+is synchronous, so these checks are not a guaranteed wall-clock timeout. The full
+text is kept privately alongside the PDF within its existing 256 MB cache budget;
+the prompt includes a 12 KB excerpt and explicitly marks truncation. No OCR engine,
+model download or cloud OCR service is needed. Remote PDF attachments are unsupported.
+
 ### OrcaRouter models through OpenCode
 
 On macOS, **Orca models** appears inside a managed OrcaRouter OpenCode conversation and opens a searchable, collapsible model picker. It stays hidden for Claude, Codex and other OpenCode agents. Herdr’s OrcaRouter launcher can still open the picker to create the first chat. Select a
@@ -521,8 +540,8 @@ a native full-document preview with scrolling and zoom; Command-W closes it.
 Unlock password-protected files before attaching. Private copies survive moving
 the original, draft recovery and queued prompts (snapshot version5).
 
-On Send, the agent receives the original local PDF reference and a bounded
-page-marked text excerpt. Large documents explicitly note omitted text; scans
-require the agent's PDF/image tools because no OCR is performed automatically.
-Attaching or previewing does not send anything to the agent. Local Claude, Codex
-and managed OpenCode are supported; PDF text alone needs no vision capability.
+On Send, the HUD performs [local all-page OCR and sampled visual analysis](#pdf-analysis-on-macos),
+including scanned and mixed pages, and provides the original PDF plus full text
+artifact for closer inspection. Local Claude, Codex and managed OpenCode are
+supported; OpenCode requires a Vision model. Attaching or previewing sends nothing
+to the agent.

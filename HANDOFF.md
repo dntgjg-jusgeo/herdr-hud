@@ -595,3 +595,30 @@ include PDF and browserdrop/picker uses bounded base64 import. Preview uses
 PDFKit on a full validated private copy. Sending resolves again, extracts bounded
 page-marked text plus local PDF reference, and retains existing transport guards.
 No OCR, remote PDF transport, model fallback or automatic sending is introduced.
+
+## All-page PDF analysis — November 16, 2026
+
+PDFAnalysis now renders every page at a bounded 2000-pixel longest edge and runs
+local Apple Vision accurate OCR with automatic language detection, even when the
+page has embedded text. One labeled sheet samples up to six pages, fits within 2000×2000 pixels for
+OpenCode compatibility, and replaces
+one PDF attachment slot; the prompt discloses exact page coverage and OCR limits.
+All page-marked embedded/OCR text persists as a private 0600 `.analysis.txt` next
+to the PDF (existing three-files-per-asset accounting and 256 MB cache budget),
+with a 12 KB quoted prompt excerpt and full-artifact/original-PDF paths. Artifacts
+are written on videoWork, serialized with PDF imports and cache quota checks.
+OCR/render/storage/overflow errors fail before dispatch and preserve drafts.
+Preparation stays on mediaPreparation; session guards still run after it.
+OpenCode preflights Vision for PDFs as well as videos, with no text-only fallback.
+
+Limits: 2 MB full text; checked 180-second document deadline and cancellable
+20-second OCR request deadline. Synchronous native rendering cannot guarantee a
+hard wall-clock timeout. OCR is not semantic diagram interpretation, and the
+sampled sheet does not claim complete visual coverage. Original PDFs remain
+available for deeper rendering; individual page JPEGs are not persisted.
+
+PDFAnalysisTests generates three-page embedded/scanned/mixed fixtures with known
+text and red triangles, tests actual Vision recognition and injected eight-page
+coverage, deadline/overflow failures, artifact permissions and symlink refusal.
+Set HERDR_PDF_ANALYSIS_FIXTURE_DIR to export sheet.jpg, material.txt, transcript.txt,
+fixture.pdf and ground-truth.txt for isolated agent checks; ordinary tests clean up.
