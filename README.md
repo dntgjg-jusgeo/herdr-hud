@@ -230,6 +230,29 @@ or more than 32 MiB of expanded content must be exported in a smaller form. Full
 No Word installation or document-conversion service is required. `.doc`, `.docm`
 and remote Word attachments are not supported.
 
+### Resume local chats after Mac login
+
+The optional login helper records the conversation ID, project, model and reported
+reasoning level of each supported local agent in a kept Herdr pane. On the next
+boot, hc starts the original conversation in that pane. If a chat has no saved
+conversation yet, the pane opens its usual shell. A resumed provider may still
+ask you to sign in or unlock its credential. The helper sends no chat messages.
+
+With the local default core running, install from this checkout using Python 3.11+
+and your core's actual socket path, for example:
+
+```sh
+python3 scripts/install-chat-restore.py --socket "$HOME/.local/state/herdr-core/default/default.sock"
+```
+
+The per-user LaunchAgent starts hc and the watcher at login. Recovery records
+are private files under `~/Library/Application Support/Herdr HUD/Chat Recovery/state`.
+The helper looks up the original conversation explicitly and keeps uncertain
+launch attempts available for manual recovery. Closing a saved pane removes it
+from automatic recovery on the next observation. Toolbar visibility and the preview
+folder follow the original local pane and provider. Drafts, queued messages and
+approvals keep their original live-session identities.
+
 ### Change the model in an existing chat
 
 On macOS, select a local Codex or Claude chat and click **Model**. The HUD

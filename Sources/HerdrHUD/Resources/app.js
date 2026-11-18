@@ -130,6 +130,7 @@ function renderRoster(){
   if(!items.length)roster.append(el('p',agents.length?'No matching agents.':'No agents found. Start an agent in Herdr.','empty'));roster.scrollTop=scroll;
 }
 function select(id){
+  restoredAppearance="";
   orcaStandalone=false;
   if(id!==selected && $('chat-settings').open) $('chat-settings').close();
   if(id!==selected)closeAttachmentPreview(false);
@@ -506,6 +507,10 @@ window.receive=({type,data})=>{
     if(updates.length&&!opened){const a=updates[0];request('alertPreview',{id:a.id,title:label(a)+(a.agent_status==='blocked'?' needs input':' finished')});}
     $('machines').replaceChildren(...(data.machines||[]).map(m=>{const node=el('span',undefined,'machine');node.append(el('span',undefined,'dot '+(m.online?'online':'')),document.createTextNode(`${m.label} · ${m.online?`${m.count} agents`:'offline'}`));node.title=m.error||'';return node;}));
     if(data.discoveryError)notice('Herdr setup: '+data.discoveryError);else if(rosterMode==='shepherdr'&&data.shepherdr?.error)notice('Shepherdr: '+data.shepherdr.error);
+    if(restoredAppearance && !valid.has(selected)){
+      const restored=agents.find(a=>a.online && a.appearance_id===restoredAppearance);
+      if(restored)select(restored.id);
+    }
     follow();if(!selected&&!orcaStandalone&&agents.length)select(rows()?.find(r=>r.agent_id)?.agent_id||agents[0].id);renderRoster();renderHeader();badge();read();pumpQueue();
   }else if(type==='visibility'){opened=data.open;if(opened){renderHeader();read();}}
   else if(type==='resetBaseline'){baseline=false;}
@@ -540,7 +545,7 @@ window.receive=({type,data})=>{
   else if(type==='nativeApprovalResponse'){const pending=nativeApprovalRequests.get(data.requestID);if(!pending)return;nativeApprovalRequests.delete(data.requestID);nativeApprovalsBusy.delete(pending.token);if(data.error)notice(data.error);renderNativeApprovals();}
   else if(type==='newCodexProgress'){$('new-codex-status').textContent=data.message||'Complete startup in Herdr.';}
   else if(type==='newCodexSession'){newCodexBusy=false;$('new-codex-start').disabled=false;$('new-codex-cancel').disabled=false;if(data.error){$('new-codex-status').textContent=data.error;}else if(data.cancelled){$('new-codex-status').textContent='Choose its project folder to start.';}else{$('new-codex-dialog').close();request('refresh');if(data.id)select(data.id);}}
-  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected)selected=data.selectedAgent;if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsNativeFiles=!!data.nativeFileAttachmentsSupported;supportsAttachments=!!data.attachmentsSupported;supportsVideos=!!data.videoAttachmentsSupported;supportsMarkdown=!!data.markdownAttachmentsSupported;supportsPDF=!!data.pdfAttachmentsSupported;supportsWord=!!data.wordAttachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
+  else if(type==='preferences'){orcaSupported=!!data.orcaModelsSupported;renderOrcaPicker();supportsNativeApprovals=!!data.nativeApprovalsSupported;$('new-codex').hidden=!supportsNativeApprovals;configureLocalFeatures(data);if(data.selectedAgent&&!selected){selected=data.selectedAgent;restoredAppearance=data.selectedAppearance||"";}if(data.rosterWidth>=155)document.querySelector('aside').style.width=data.rosterWidth+'px';mode=data.mode||'chat';supportsNativeFiles=!!data.nativeFileAttachmentsSupported;supportsAttachments=!!data.attachmentsSupported;supportsVideos=!!data.videoAttachmentsSupported;supportsMarkdown=!!data.markdownAttachmentsSupported;supportsPDF=!!data.pdfAttachmentsSupported;supportsWord=!!data.wordAttachmentsSupported;supportsPreviews=!!data.previewsSupported;supportsTerminalControls=!!data.terminalControlsSupported;$('previews-tab').hidden=!supportsPreviews;supportsShepherdr=!!data.shepherdrSupported;rosterMode=supportsShepherdr&&data.rosterMode==='shepherdr'?'shepherdr':'herdr';renderModes();if(rosterMode==='shepherdr')renderRoster();}
   else if(type==='quickPrompts'){quickPrompts=data.prompts;renderQuickPrompts();}
   else if(type==='loadDrafts'){restoreDrafts(data);}
   else if(type==='saveDrafts'){const pending=storageRequests.get(data.requestID);if(pending){storageRequests.delete(data.requestID);if(data.error)pending.reject(Error(data.error));else pending.resolve();}}
@@ -577,8 +582,8 @@ function renderFileLinks(){
   const signature=JSON.stringify([selected,items]);if(box._signature===signature)return;box._signature=signature;
   box.replaceChildren(...items.map(item=>{const b=el('button',item.name);b.title=item.path;b.onclick=()=>request('openFileLink',{id:selected,token:item.token});return b;}));
 }
-let chatToolOptions = new Map();
-function chatTools() { return chatToolOptions.get(selected) || {}; }
+let chatToolOptions = new Map(), restoredAppearance = "";
+function chatTools() { return chatToolOptions.get(active()?.appearance_id || selected) || {}; }
 $('chat-tools').onclick = () => {
   $('show-shortcuts').checked = !!chatTools().shortcuts;
   $('show-shortcuts').disabled = !supportsQuick;
@@ -590,7 +595,7 @@ $('settings-done').onclick = () => $('chat-settings').close();
 function saveChatTools() {
   if (!active()) return;
   const options = {shortcuts:$('show-shortcuts').checked, handoff:$('show-handoff').checked};
-  chatToolOptions.set(selected, options);
+  chatToolOptions.set(active()?.appearance_id || selected, options);
   request('preferences', {chatTools:options, chatID:selected});
   renderHeader();
 }

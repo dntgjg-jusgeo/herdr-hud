@@ -275,6 +275,9 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
     @objc func screensChanged() { restorePosition(); positionPanel() }
     @objc func spaceChanged() { if visible { bubble.orderFrontRegardless(); if panelOpen { panel.orderFrontRegardless() }; toast?.orderFrontRegardless() } }
     var rosterMode: String { defaults.string(forKey:"rosterMode") == "shepherdr" ? "shepherdr" : "herdr" }
+    private func appearancePreferences(_ key: String) -> Row {
+        HCClient.appearancePreferences(defaults.dictionary(forKey:key) ?? [:], selected:defaults.string(forKey:"selectedAgent"))
+    }
     @objc func refresh() {
         guard visible, !polling else { return }; polling = true
         let mode = rosterMode
@@ -290,7 +293,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         guard message.frameInfo.isMainFrame, let data = message.body as? Row, let operation = data["op"] as? String else { return }
         let requestID = data["requestID"] as? String ?? ""
         switch operation {
-        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"nativeFileAttachmentsSupported":client.usesHC,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"markdownAttachmentsSupported":self.client.usesHC,"pdfAttachmentsSupported":self.client.usesHC,"wordAttachmentsSupported":self.client.usesHC,"agentHandoffSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"chatTools":defaults.dictionary(forKey:"chatTools") ?? [:],"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
+        case "ready": ready = true; emit("preferences",["selectedAgent":defaults.string(forKey:"selectedAgent") ?? "","rosterWidth":defaults.double(forKey:"rosterWidth"),"mode":defaults.string(forKey:"viewMode") ?? "chat","rosterMode":rosterMode,"shepherdrSupported":true,"previewsSupported":true,"nativeFileAttachmentsSupported":client.usesHC,"attachmentsSupported":true,"videoAttachmentsSupported":self.client.usesHC,"markdownAttachmentsSupported":self.client.usesHC,"pdfAttachmentsSupported":self.client.usesHC,"wordAttachmentsSupported":self.client.usesHC,"agentHandoffSupported":self.client.usesHC,"terminalControlsSupported":self.client.usesHC,"nativeApprovalsSupported":self.client.usesHC,"orcaModelsSupported":self.client.usesHC,"draftsSupported":true,"selectedAppearance":HCClient.appearanceID(defaults.string(forKey:"selectedAgent") ?? ""),"chatTools":appearancePreferences("chatTools"),"quickPromptsSupported":true,"quickPrompts":(try? QuickPrompts.validate(self.defaults.array(forKey:"quickPrompts"))) ?? QuickPrompts.defaults]); emit("visibility",["open":panelOpen]); if !lastSnapshot.isEmpty { emit("roster",lastSnapshot) }; if !hotkeyWarning.isEmpty { emit("notice",["message":hotkeyWarning]) }
             if CommandLine.arguments.contains("--orca-models") {openPanel();emit("openOrcaModels",[:])}
         case "orcaModels":
             guard client.usesHC,panelOpen,!requestID.isEmpty else { emit(operation,["requestID":requestID,"error":"Open the HUD to load OrcaRouter models."]);return }
@@ -482,7 +485,8 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
             if let id = data["chatID"] as? String, !id.isEmpty, id.utf8.count <= 8192,
                let options = data["chatTools"] as? [String:Bool],
                let shortcuts = options["shortcuts"], let handoff = options["handoff"] {
-                var saved = defaults.dictionary(forKey:"chatTools") ?? [:]
+                var saved = appearancePreferences("chatTools")
+                let id = HCClient.appearanceID(id)
                 if shortcuts || handoff { saved[id] = ["shortcuts":shortcuts, "handoff":handoff] }
                 else { saved.removeValue(forKey:id) }
                 defaults.set(saved, forKey:"chatTools")
@@ -501,8 +505,8 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
                 picker.canChooseDirectories = true; picker.canChooseFiles = false; picker.allowsMultipleSelection = false
                 picker.beginSheetModal(for:panel) { response in
                     guard response == .OK, let url = picker.url, PreviewGallery.localDirectory(url) else { return }
-                    var folders = self.defaults.dictionary(forKey:"previewFolders") as? [String:String] ?? [:]
-                    folders[id] = url.path; self.defaults.set(folders,forKey:"previewFolders")
+                    var folders = self.appearancePreferences("previewFolders")
+                    folders[HCClient.appearanceID(id)] = url.path; self.defaults.set(folders,forKey:"previewFolders")
                     self.emit("previewFolderChanged",["id":id])
                 }
             } else if operation == "previews" { loadPreviews(id,requestID:requestID) }
@@ -788,7 +792,7 @@ final class HUDApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKN
         }
     }
     func loadPreviews(_ id: String, requestID: String) {
-        let folder = (defaults.dictionary(forKey:"previewFolders") as? [String:String])?[id]
+        let folder = appearancePreferences("previewFolders")[HCClient.appearanceID(id)] as? String
         work.async {
             var result: Row
             do {

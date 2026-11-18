@@ -109,9 +109,33 @@ final class HCClient {
             row["reported_model"] = status["model"] as? String
             row["reported_reasoning_effort"] = status["reasoning_effort"] as? String
         }
-        row["id"] = encode([core, address, identity])
+        let id = encode([core, address, identity])
+        row["id"] = id
+        if machineID == "local" { row["appearance_id"] = Self.appearanceID(id) }
         return row
     }
+    // Visual preferences belong to a kept local pane. Delivery, drafts and
+    // approvals continue to require the full identity, including the live PID.
+    static func appearanceID(_ id: String) -> String {
+        guard let parts = (try? JSONSerialization.jsonObject(with:Data(id.utf8))) as? [Any],
+              parts.count == 3, let core = parts[0] as? String, let address = parts[1] as? String,
+              !address.contains("/"), let identity = parts[2] as? Row,
+              identity["core"] as? String == core, identity["remote"] is NSNull,
+              let birth = identity["created_ms"] as? NSNumber, let provider = identity["provider"] as? String else { return id }
+        return "pane:" + encode([core,address,birth,provider])
+    }
+
+    static func appearancePreferences(_ saved: Row, selected: String?) -> Row {
+        var normalized = saved.filter { appearanceID($0.key) == $0.key }
+        // If legacy values disagree, only the last selected chat can break the tie.
+        for (key, group) in Dictionary(grouping:saved.keys,by:appearanceID) where normalized[key] == nil {
+            let values = group.compactMap { saved[$0] }
+            if let selected, group.contains(selected) { normalized[key] = saved[selected] }
+            else if Set(values.map(encode)).count == 1 { normalized[key] = values.first }
+        }
+        return normalized
+    }
+
     func snapshot() -> Row {
         do {
             let (core,list,machines) = try facts("terminal.list")
